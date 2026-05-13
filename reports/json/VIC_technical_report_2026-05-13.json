@@ -1,0 +1,504 @@
+{
+    "ticker": "VIC",
+    "run_id": "5b17599d",
+    "forecast_data": {
+        "ticker": "VIC",
+        "current_price": 222000.0,
+        "as_of_date": "2026-05-12",
+        "metrics": {
+            "MAE": 5097.4997422689285,
+            "RMSE": 6545.8669260153265,
+            "MAPE": 0.02813275098390648
+        },
+        "validation_metrics": {
+            "status": "PASS",
+            "target_col": "close",
+            "horizon": 1,
+            "sample_count": 471,
+            "feature_count": 28,
+            "fold_count": 8,
+            "config": {
+                "initial_train_size": 252,
+                "validation_window": 20,
+                "step_size": 20,
+                "max_windows": 8,
+                "horizon": 1,
+                "quantiles": [
+                    0.025,
+                    0.1,
+                    0.5,
+                    0.9,
+                    0.975
+                ]
+            },
+            "metrics": {
+                "mae": 4025.963180376498,
+                "rmse": 5384.154917097326,
+                "mape": 0.028475101941814546,
+                "smape": 0.028514366521644637,
+                "directional_accuracy": 0.5471698113207547,
+                "interval_80_coverage": 0.6666666666666666,
+                "interval_95_coverage": 0.8427672955974843,
+                "interval_coverage": 0.8427672955974843,
+                "pinball_loss": 956.9847154162508,
+                "prediction_bias": -581.6494441396886,
+                "prediction_bias_pct": -0.0038393660792517786,
+                "quantile_crossing_rate": 0.0
+            },
+            "folds": [
+                {
+                    "fold": 1,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2025-09-16T00:00:00",
+                    "validation_start": "2025-09-17T00:00:00",
+                    "validation_end": "2025-10-14T00:00:00",
+                    "train_size": 312,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 2186.9033384255963,
+                        "rmse": 2901.9998558023904,
+                        "mape": 0.02486291805384255,
+                        "smape": 0.02527781696182411,
+                        "directional_accuracy": 0.65,
+                        "interval_80_coverage": 0.65,
+                        "interval_95_coverage": 0.85,
+                        "interval_coverage": 0.85,
+                        "pinball_loss": 481.3304688237087,
+                        "prediction_bias": -1412.954539858822,
+                        "prediction_bias_pct": -0.015600480324431624,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 2,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2025-10-14T00:00:00",
+                    "validation_start": "2025-10-15T00:00:00",
+                    "validation_end": "2025-11-11T00:00:00",
+                    "train_size": 332,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 3073.504986438501,
+                        "rmse": 3604.698280268238,
+                        "mape": 0.030026447526412398,
+                        "smape": 0.02992495743271873,
+                        "directional_accuracy": 0.6,
+                        "interval_80_coverage": 0.55,
+                        "interval_95_coverage": 0.9,
+                        "interval_coverage": 0.9,
+                        "pinball_loss": 725.3823056102267,
+                        "prediction_bias": 120.0285610703846,
+                        "prediction_bias_pct": 0.001748084976433609,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 3,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2025-11-11T00:00:00",
+                    "validation_start": "2025-11-12T00:00:00",
+                    "validation_end": "2025-12-09T00:00:00",
+                    "train_size": 352,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 3527.698415641684,
+                        "rmse": 4750.862222701839,
+                        "mape": 0.026129439600853382,
+                        "smape": 0.026351317088797187,
+                        "directional_accuracy": 0.75,
+                        "interval_80_coverage": 0.7,
+                        "interval_95_coverage": 0.85,
+                        "interval_coverage": 0.85,
+                        "pinball_loss": 780.1732210888161,
+                        "prediction_bias": -1789.7005319409648,
+                        "prediction_bias_pct": -0.01390310426060915,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 4,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2025-12-09T00:00:00",
+                    "validation_start": "2025-12-10T00:00:00",
+                    "validation_end": "2026-01-08T00:00:00",
+                    "train_size": 372,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 3881.659580175944,
+                        "rmse": 5026.0580808643335,
+                        "mape": 0.024087185132768557,
+                        "smape": 0.024173792967331464,
+                        "directional_accuracy": 0.4,
+                        "interval_80_coverage": 0.85,
+                        "interval_95_coverage": 0.9,
+                        "interval_coverage": 0.9,
+                        "pinball_loss": 901.1979763496407,
+                        "prediction_bias": -647.850409273796,
+                        "prediction_bias_pct": -0.00347009463916124,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 5,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2026-01-08T00:00:00",
+                    "validation_start": "2026-01-09T00:00:00",
+                    "validation_end": "2026-02-05T00:00:00",
+                    "train_size": 392,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 5119.5797468539,
+                        "rmse": 6516.743788242289,
+                        "mape": 0.03491375657397462,
+                        "smape": 0.03427527255426852,
+                        "directional_accuracy": 0.35,
+                        "interval_80_coverage": 0.55,
+                        "interval_95_coverage": 0.7,
+                        "interval_coverage": 0.7,
+                        "pinball_loss": 1518.8477689374408,
+                        "prediction_bias": 2649.9246858581764,
+                        "prediction_bias_pct": 0.01851038714524256,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 6,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2026-02-05T00:00:00",
+                    "validation_start": "2026-02-06T00:00:00",
+                    "validation_end": "2026-03-12T00:00:00",
+                    "train_size": 412,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 5009.732337311534,
+                        "rmse": 6435.981405286797,
+                        "mape": 0.03243083603729502,
+                        "smape": 0.03239888948878068,
+                        "directional_accuracy": 0.6,
+                        "interval_80_coverage": 0.6,
+                        "interval_95_coverage": 0.8,
+                        "interval_coverage": 0.8,
+                        "pinball_loss": 1103.6593779202508,
+                        "prediction_bias": -103.91792721343882,
+                        "prediction_bias_pct": -0.0003977613325764159,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 7,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2026-03-12T00:00:00",
+                    "validation_start": "2026-03-13T00:00:00",
+                    "validation_end": "2026-04-09T00:00:00",
+                    "train_size": 432,
+                    "validation_size": 20,
+                    "metrics": {
+                        "mae": 3487.1451370492227,
+                        "rmse": 4744.452556726657,
+                        "mape": 0.02529503425363646,
+                        "smape": 0.02520191264758232,
+                        "directional_accuracy": 0.6,
+                        "interval_80_coverage": 0.75,
+                        "interval_95_coverage": 0.85,
+                        "interval_coverage": 0.85,
+                        "pinball_loss": 878.717258820873,
+                        "prediction_bias": -117.4769658891295,
+                        "prediction_bias_pct": -0.00017901499989037752,
+                        "quantile_crossing_rate": 0.0
+                    }
+                },
+                {
+                    "fold": 8,
+                    "train_start": "2024-06-17T00:00:00",
+                    "train_end": "2026-04-09T00:00:00",
+                    "validation_start": "2026-04-10T00:00:00",
+                    "validation_end": "2026-05-11T00:00:00",
+                    "train_size": 452,
+                    "validation_size": 19,
+                    "metrics": {
+                        "mae": 6021.2460443124,
+                        "rmse": 7596.155281101527,
+                        "mape": 0.030138361324886967,
+                        "smape": 0.030616057585023025,
+                        "directional_accuracy": 0.42105263157894735,
+                        "interval_80_coverage": 0.6842105263157895,
+                        "interval_95_coverage": 0.8947368421052632,
+                        "interval_coverage": 0.8947368421052632,
+                        "pinball_loss": 1282.8632736928798,
+                        "prediction_bias": -3497.016793329405,
+                        "prediction_bias_pct": -0.018137870415851586,
+                        "quantile_crossing_rate": 0.0
+                    }
+                }
+            ],
+            "message": ""
+        },
+        "forecasts": [
+            {
+                "step": 1,
+                "q_0.025": 206855.1711561704,
+                "q_0.1": 216440.57615708807,
+                "q_0.5": 222543.12140389372,
+                "q_0.9": 233201.25407501924,
+                "q_0.975": 237106.49586098656
+            },
+            {
+                "step": 2,
+                "q_0.025": 199346.7504858203,
+                "q_0.1": 208753.8202644718,
+                "q_0.5": 223927.03363031635,
+                "q_0.9": 238014.12931125998,
+                "q_0.975": 247413.3836535449
+            },
+            {
+                "step": 3,
+                "q_0.025": 194793.30847505023,
+                "q_0.1": 209164.38505354105,
+                "q_0.5": 223052.72273397486,
+                "q_0.9": 240691.96641473277,
+                "q_0.975": 255803.11295048514
+            },
+            {
+                "step": 4,
+                "q_0.025": 191422.45893938458,
+                "q_0.1": 206918.91149345128,
+                "q_0.5": 225089.45989621864,
+                "q_0.9": 247695.44509547995,
+                "q_0.975": 259476.81405031538
+            },
+            {
+                "step": 5,
+                "q_0.025": 189583.02480724803,
+                "q_0.1": 203125.38978722403,
+                "q_0.5": 224552.1316616707,
+                "q_0.9": 252520.46470032146,
+                "q_0.975": 264667.311348025
+            },
+            {
+                "step": 6,
+                "q_0.025": 184768.1256980914,
+                "q_0.1": 200962.0592277309,
+                "q_0.5": 222513.7456173448,
+                "q_0.9": 257176.9426273961,
+                "q_0.975": 271418.04482831876
+            },
+            {
+                "step": 7,
+                "q_0.025": 182658.85570163067,
+                "q_0.1": 202976.83937149905,
+                "q_0.5": 220520.7335815568,
+                "q_0.9": 256964.47016360835,
+                "q_0.975": 273615.84306793025
+            }
+        ]
+    },
+    "quantiles_fixed": false,
+    "evaluation_status": "PASS",
+    "evaluation_reason": "Holdout MAPE 0.0281 is within threshold 0.0300.",
+    "regime_report": {
+        "volatility_regime": "NORMAL_VOLATILITY",
+        "trend_regime": "UPTREND",
+        "liquidity_regime": "NORMAL_LIQUIDITY",
+        "regime_confidence": 0.63,
+        "regime_notes": [
+            "20-day volatility percentile=0.68.",
+            "MA7/MA21 gap=0.1083; 20-day return=0.4879; 5-day return=0.0114.",
+            "Volume z-score=-0.16; recent volume ratio=0.92."
+        ]
+    },
+    "drift_report": {
+        "feature_drift_detected": true,
+        "target_drift_detected": false,
+        "concept_drift_detected": false,
+        "drifted_features": [
+            {
+                "feature": "close",
+                "mean_shift_z": 2.482,
+                "std_ratio": 0.699,
+                "psi": 7.051
+            },
+            {
+                "feature": "volume",
+                "mean_shift_z": 0.091,
+                "std_ratio": 0.537,
+                "psi": 1.855
+            },
+            {
+                "feature": "daily_return",
+                "mean_shift_z": 0.174,
+                "std_ratio": 1.397,
+                "psi": 0.452
+            },
+            {
+                "feature": "ma_7",
+                "mean_shift_z": 2.422,
+                "std_ratio": 0.632,
+                "psi": 7.025
+            },
+            {
+                "feature": "ma_14",
+                "mean_shift_z": 2.398,
+                "std_ratio": 0.5,
+                "psi": 8.246
+            },
+            {
+                "feature": "volatility_7",
+                "mean_shift_z": 1.026,
+                "std_ratio": 0.651,
+                "psi": 2.72
+            },
+            {
+                "feature": "macd",
+                "mean_shift_z": 0.317,
+                "std_ratio": 2.636,
+                "psi": 2.431
+            },
+            {
+                "feature": "atr_14",
+                "mean_shift_z": 2.71,
+                "std_ratio": 0.414,
+                "psi": 8.246
+            },
+            {
+                "feature": "roc_7",
+                "mean_shift_z": 0.415,
+                "std_ratio": 1.656,
+                "psi": 1.296
+            },
+            {
+                "feature": "vn30_return",
+                "mean_shift_z": 0.017,
+                "std_ratio": 1.401,
+                "psi": 0.306
+            },
+            {
+                "feature": "vn30f_return",
+                "mean_shift_z": 0.036,
+                "std_ratio": 1.53,
+                "psi": 0.524
+            },
+            {
+                "feature": "open",
+                "mean_shift_z": 2.472,
+                "std_ratio": 0.679,
+                "psi": 7.018
+            },
+            {
+                "feature": "high",
+                "mean_shift_z": 2.489,
+                "std_ratio": 0.689,
+                "psi": 7.018
+            },
+            {
+                "feature": "low",
+                "mean_shift_z": 2.487,
+                "std_ratio": 0.68,
+                "psi": 7.013
+            }
+        ],
+        "severity": "HIGH",
+        "recommended_action": "MANUAL_REVIEW",
+        "drift_notes": [
+            "Target return mean_shift_z=0.18; volatility_ratio=1.41.",
+            "Validation snapshot: MAPE=0.0285; directional_accuracy=0.5472; interval_95_coverage=0.8428.",
+            "Feature drift detected in 14 monitored features."
+        ]
+    },
+    "risk_report": {
+        "expected_return_7d": -0.006663,
+        "downside_risk_95": -0.177212,
+        "upside_potential_95": 0.232504,
+        "risk_reward_ratio": 1.312,
+        "var_95": 0.177212,
+        "expected_shortfall": 0.203794,
+        "risk_level": "EXTREME",
+        "preliminary_signal": "MANUAL_REVIEW",
+        "signal_confidence": 0.44,
+        "risk_notes": [
+            "High drift severity detected."
+        ]
+    },
+    "news_context": "NO_NEWS",
+    "news_found": false,
+    "news_items_count": 0,
+    "evidence_level": "NONE",
+    "shock_type": "NO_NEWS",
+    "trading_signal": "MANUAL_REVIEW",
+    "signal_confidence": 0.44,
+    "governance_decision": {},
+    "committee_assessment": {
+        "assessment_summary": "The model for VIC currently maintains a PASS status on performance metrics; however, the risk engine has issued a MANUAL_REVIEW signal due to significant feature drift. This should be treated as a risk-control signal, not a directional trading conviction.",
+        "interpretation": {
+            "forecast_performance": "The model remains within performance thresholds with a holdout MAPE of 0.0281, which is below the 0.0300 limit, indicating acceptable predictive accuracy on historical holdout data.",
+            "validation_reliability": "Walk-forward validation across 8 folds shows a MAPE of 0.0285 and a directional accuracy of 54.72%. The 95% interval coverage of 84.28% suggests the model's uncertainty estimates may be slightly optimistic.",
+            "risk_profile": "The 7-day median forecast is 220,520.7336 with a 95% interval width of 90,956.9874 (40.97% of current price). Expected return is -0.67%, downside risk is -17.72%, upside potential is 23.25%, VaR 95 is 17.72%, Expected Shortfall is 20.38%, and risk/reward is 1.3120. The risk engine reports EXTREME risk with signal confidence 0.4400.",
+            "market_regime": "The market is characterized by an uptrend and normal volatility/liquidity. The regime confidence is 63%, supported by a 20-day return of 48.79% and a moderate MA7/MA21 gap.",
+            "drift_condition": "High drift severity is detected. 14 features, including 'close', 'ma_7', 'ma_14', and 'atr_14', show significant PSI values and mean shifts, indicating that the current market data distribution has diverged from the training distribution.",
+            "news_context_evidence": "No relevant news evidence was found. shock_type=NO_NEWS and evidence_level=NONE; there is insufficient evidence to attribute this to a specific news event.",
+            "governance_retrain_status": "No retrain attempts have been initiated; the model status remains PASS, but the drift-induced MANUAL_REVIEW signal necessitates human oversight."
+        },
+        "decision_rationale": "The conflict between the PASS model status and the MANUAL_REVIEW risk signal arises because the model's internal performance metrics (MAPE) remain stable, while the input feature space (drift detection) has undergone a structural shift. The high PSI values for price-based features suggest that the model's current inputs are statistically distinct from those used during training, rendering the model's output unreliable despite its historical accuracy.",
+        "final_recommendation": "MANUAL_REVIEW: The model should not be utilized for automated decision-making until the high feature drift is investigated and the model is either recalibrated or validated against the new data regime. This is research output only and not financial advice.",
+        "evidence_used": [
+            "holdout_metrics",
+            "walk_forward_validation",
+            "forecast_distribution",
+            "risk_report",
+            "regime_report",
+            "drift_report",
+            "news_context",
+            "governance_status"
+        ]
+    },
+    "retry_count": 0,
+    "audit_trail": [
+        {
+            "timestamp": "2026-05-13T06:24:21Z",
+            "phase": "pipeline_initialization",
+            "status": "PASS",
+            "message": "Initial forecast, monitoring, and risk reports prepared.",
+            "details": {
+                "run_id": "5b17599d"
+            }
+        },
+        {
+            "timestamp": "2026-05-13T06:24:21Z",
+            "phase": "validate_quantiles",
+            "status": "PASS",
+            "message": "Quantile crossing fixed=False.",
+            "details": {}
+        },
+        {
+            "timestamp": "2026-05-13T06:24:21Z",
+            "phase": "evaluate_model",
+            "status": "PASS",
+            "message": "Holdout MAPE 0.0281 is within threshold 0.0300.",
+            "details": {
+                "holdout_mape": 0.02813275098390648,
+                "walk_forward_directional_accuracy": 0.5471698113207547,
+                "walk_forward_interval_95_coverage": 0.8427672955974843
+            }
+        },
+        {
+            "timestamp": "2026-05-13T06:25:24Z",
+            "phase": "research_signal",
+            "status": "MANUAL_REVIEW",
+            "message": "Final research signal=MANUAL_REVIEW; confidence=0.44.",
+            "details": {
+                "risk_level": "EXTREME",
+                "risk_notes": [
+                    "High drift severity detected."
+                ]
+            }
+        }
+    ],
+    "report_metadata": {
+        "generated_at": "2026-05-13T06:25:24Z",
+        "report_type": "technical"
+    },
+    "news_evidence": {
+        "news_found": false,
+        "news_items_count": 0,
+        "evidence_level": "NONE"
+    }
+}

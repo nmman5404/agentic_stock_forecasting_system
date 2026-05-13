@@ -1,0 +1,17 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+sqlalchemy
+vnstock
+ta
+langchain
+langchain-core
+langgraph
+langchain-google-genai
+python-dotenv
+pyyaml
+plotly
+jinja2
+feedparser
+beautifulsoup4

@@ -1,0 +1,7 @@
+thresholds:
+  max_mape: 0.03        # MAPE tối đa chấp nhận được cho dự báo hàng ngày
+  max_retries: 2           # Số lần tối đa tự động retrain model trong ngày
+
+prompts:
+  evaluate: "Bạn là chuyên gia định lượng. Đánh giá kết quả dự báo cổ phiếu {ticker}."
+  contextualize: "Tìm tin tức giải thích cho biến động bất thường của mã {ticker}."

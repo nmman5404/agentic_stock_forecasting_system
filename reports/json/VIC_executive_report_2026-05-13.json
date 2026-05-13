@@ -1,0 +1,149 @@
+{
+    "metadata": {
+        "ticker": "VIC",
+        "run_id": "5b17599d",
+        "as_of_date": "2026-05-12",
+        "generated_at": "2026-05-13T06:25:24Z",
+        "report_type": "executive"
+    },
+    "summary": {
+        "model_status": "PASS",
+        "final_signal": "MANUAL_REVIEW",
+        "signal_confidence": 0.44,
+        "risk_level": "EXTREME",
+        "drift_severity": "HIGH",
+        "news_evidence": "NONE"
+    },
+    "forecast": {
+        "current_price": 222000.0,
+        "horizon_days": 7,
+        "forecasts": [
+            {
+                "step": 1,
+                "q_0.025": 206855.1711561704,
+                "q_0.1": 216440.57615708807,
+                "q_0.5": 222543.12140389372,
+                "q_0.9": 233201.25407501924,
+                "q_0.975": 237106.49586098656
+            },
+            {
+                "step": 2,
+                "q_0.025": 199346.7504858203,
+                "q_0.1": 208753.8202644718,
+                "q_0.5": 223927.03363031635,
+                "q_0.9": 238014.12931125998,
+                "q_0.975": 247413.3836535449
+            },
+            {
+                "step": 3,
+                "q_0.025": 194793.30847505023,
+                "q_0.1": 209164.38505354105,
+                "q_0.5": 223052.72273397486,
+                "q_0.9": 240691.96641473277,
+                "q_0.975": 255803.11295048514
+            },
+            {
+                "step": 4,
+                "q_0.025": 191422.45893938458,
+                "q_0.1": 206918.91149345128,
+                "q_0.5": 225089.45989621864,
+                "q_0.9": 247695.44509547995,
+                "q_0.975": 259476.81405031538
+            },
+            {
+                "step": 5,
+                "q_0.025": 189583.02480724803,
+                "q_0.1": 203125.38978722403,
+                "q_0.5": 224552.1316616707,
+                "q_0.9": 252520.46470032146,
+                "q_0.975": 264667.311348025
+            },
+            {
+                "step": 6,
+                "q_0.025": 184768.1256980914,
+                "q_0.1": 200962.0592277309,
+                "q_0.5": 222513.7456173448,
+                "q_0.9": 257176.9426273961,
+                "q_0.975": 271418.04482831876
+            },
+            {
+                "step": 7,
+                "q_0.025": 182658.85570163067,
+                "q_0.1": 202976.83937149905,
+                "q_0.5": 220520.7335815568,
+                "q_0.9": 256964.47016360835,
+                "q_0.975": 273615.84306793025
+            }
+        ]
+    },
+    "model_metrics": {
+        "holdout": {
+            "MAE": 5097.4997422689285,
+            "RMSE": 6545.8669260153265,
+            "MAPE": 0.02813275098390648
+        },
+        "walk_forward": {
+            "MAE": 4025.963180376498,
+            "RMSE": 5384.154917097326,
+            "MAPE": 0.028475101941814546,
+            "SMAPE": 0.028514366521644637,
+            "directional_accuracy": 0.5471698113207547,
+            "interval_80_coverage": 0.6666666666666666,
+            "interval_95_coverage": 0.8427672955974843,
+            "pinball_loss": 956.9847154162508,
+            "prediction_bias": -581.6494441396886
+        }
+    },
+    "monitoring": {
+        "regime": {
+            "volatility_regime": "NORMAL_VOLATILITY",
+            "trend_regime": "UPTREND",
+            "liquidity_regime": "NORMAL_LIQUIDITY",
+            "regime_confidence": 0.63
+        },
+        "drift": {
+            "feature_drift_detected": true,
+            "target_drift_detected": false,
+            "concept_drift_detected": false,
+            "severity": "HIGH",
+            "recommended_action": "MANUAL_REVIEW",
+            "top_drifted_features": [
+                "close",
+                "volume",
+                "daily_return",
+                "ma_7",
+                "ma_14"
+            ]
+        }
+    },
+    "risk": {
+        "expected_return_7d": -0.006663,
+        "downside_risk_95": -0.177212,
+        "upside_potential_95": 0.232504,
+        "risk_reward_ratio": 1.312,
+        "var_95": 0.177212,
+        "expected_shortfall": 0.203794,
+        "risk_level": "EXTREME",
+        "signal_confidence": 0.44
+    },
+    "agent": {
+        "assessment_summary": "The model for VIC currently maintains a PASS status on performance metrics; however, the risk engine has issued a MANUAL_REVIEW signal due to significant feature drift. This should be treated as a risk-control signal, not a directional trading conviction.",
+        "decision_rationale": "The conflict between the PASS model status and the MANUAL_REVIEW risk signal arises because the model's internal performance metrics (MAPE) remain stable, while the input feature space (drift detection) has undergone a structural shift. The high PSI values for price-based features suggest that the model's current inputs are statistically distinct from those used during training, rendering the model's output unreliable despite its historical accuracy.",
+        "final_recommendation": "MANUAL_REVIEW: The model should not be utilized for automated decision-making until the high feature drift is investigated and the model is either recalibrated or validated against the new data regime. This is research output only and not financial advice.",
+        "evidence_used": [
+            "holdout_metrics",
+            "walk_forward_validation",
+            "forecast_distribution",
+            "risk_report",
+            "regime_report",
+            "drift_report",
+            "news_context",
+            "governance_status"
+        ]
+    },
+    "audit_summary": {
+        "retrain_attempts": 0,
+        "quantiles_fixed": false,
+        "audit_event_count": 4
+    }
+}
