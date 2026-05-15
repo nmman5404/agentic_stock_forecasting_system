@@ -11,8 +11,7 @@ logger = get_logger("RegimeDetector")
 
 
 def detect_regime(processed_df: pd.DataFrame) -> Dict[str, Any]:
-    if processed_df.empty or "close" not in processed_df.columns:
-        return _fallback_report("Insufficient data for regime detection.")
+    _validate_regime_input(processed_df)
 
     df = processed_df.sort_index().copy()
     notes: List[str] = []
@@ -33,7 +32,6 @@ def detect_regime(processed_df: pd.DataFrame) -> Dict[str, Any]:
         "Regime components computed independently: volatility=%s, trend=%s, volume=%s."
         % (volatility_regime, trend_regime, volume_regime)
     )
-    confidence = _confidence(len(df), volatility_regime, trend_regime, volume_regime, warnings)
 
     report = {
         "volatility_regime": volatility_regime,
@@ -42,46 +40,37 @@ def detect_regime(processed_df: pd.DataFrame) -> Dict[str, Any]:
         "final_regime_label": final_regime_label,
         "metrics": metrics,
         "warnings": warnings,
-        "regime_confidence": confidence,
         "regime_notes": notes,
         "liquidity_regime": volume_regime,
     }
     logger.info(
-        "Regime report generated | volatility=%s | trend=%s | volume=%s | confidence=%.2f",
+        "Regime report generated | volatility=%s | trend=%s | volume=%s | label=%s",
         volatility_regime,
         trend_regime,
         volume_regime,
-        confidence,
+        final_regime_label,
     )
     return report
 
 
-def _fallback_report(reason: str) -> Dict[str, Any]:
-    volume_regime = "NORMAL_VOLUME"
-    return {
-        "volatility_regime": "NORMAL_VOLATILITY",
-        "trend_regime": "SIDEWAYS",
-        "volume_regime": volume_regime,
-        "final_regime_label": f"NORMAL_VOLATILITY__SIDEWAYS__{volume_regime}",
-        "metrics": {
-            "vol_percentile": 0.5,
-            "current_vol_20d": 0.0,
-            "ma_gap": 0.0,
-            "return_20d": 0.0,
-            "return_5d": 0.0,
-            "volume_zscore": None,
-            "recent_volume_ratio": None,
-        },
-        "warnings": [],
-        "regime_confidence": 0.0,
-        "regime_notes": [reason],
-        "liquidity_regime": volume_regime,
-    }
+def _validate_regime_input(processed_df: pd.DataFrame) -> None:
+    if not isinstance(processed_df, pd.DataFrame):
+        raise TypeError("Regime detection requires a pandas DataFrame input.")
+    if processed_df.empty:
+        raise ValueError("Regime detection requires a non-empty processed dataset.")
+    if "close" not in processed_df.columns:
+        raise ValueError("Regime detection requires a close column.")
+    close = processed_df["close"].replace([np.inf, -np.inf], np.nan).dropna()
+    if len(close) < 22:
+        raise ValueError("Regime detection requires at least 22 valid close observations.")
 
 
 def _volatility_regime(df: pd.DataFrame) -> tuple[str, Dict[str, Optional[float]]]:
     returns = df["daily_return"] if "daily_return" in df.columns else df["close"].pct_change()
     returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+    if len(returns) < 20:
+        raise ValueError("Volatility regime requires at least 20 return observations.")
+
     current_vol = float(returns.tail(20).std() or 0.0)
     rolling_vol = returns.rolling(20).std().dropna()
     vol_percentile = _percentile_rank(rolling_vol, current_vol)
@@ -105,7 +94,10 @@ def _trend_regime(df: pd.DataFrame) -> tuple[str, Dict[str, float], List[str]]:
     ma7 = df["close"].rolling(7).mean()
     ma21 = df["close"].rolling(21).mean()
     latest_ma21 = float(ma21.iloc[-1]) if not pd.isna(ma21.iloc[-1]) else 0.0
-    ma_gap = float((ma7.iloc[-1] - ma21.iloc[-1]) / latest_ma21) if latest_ma21 else 0.0
+    if latest_ma21 <= 0:
+        raise ValueError("Trend regime requires a positive 21-day moving average.")
+
+    ma_gap = float((ma7.iloc[-1] - ma21.iloc[-1]) / latest_ma21)
     return_20d = _safe_float(df["close"].pct_change(20).iloc[-1])
     return_5d = _safe_float(df["close"].pct_change(5).iloc[-1])
 
@@ -160,33 +152,14 @@ def _volume_regime(df: pd.DataFrame) -> tuple[str, Dict[str, Optional[float]]]:
 
 def _percentile_rank(values: pd.Series, current_value: float) -> float:
     if values.empty:
-        return 0.5
+        raise ValueError("Volatility percentile requires rolling volatility observations.")
     return float((values <= current_value).mean())
 
 
-def _confidence(
-    row_count: int,
-    volatility_regime: str,
-    trend_regime: str,
-    volume_regime: str,
-    warnings: List[str],
-) -> float:
-    confidence = 0.55 if row_count >= 80 else 0.35
-    if volatility_regime in {"HIGH_VOLATILITY", "EXTREME_VOLATILITY"}:
-        confidence += 0.08
-    if trend_regime in {"UPTREND", "DOWNTREND"}:
-        confidence += 0.08
-    if volume_regime != "NORMAL_VOLUME":
-        confidence += 0.05
-    if warnings:
-        confidence -= 0.05
-    return round(min(max(confidence, 0.0), 0.9), 2)
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _safe_float(value: Any) -> float:
+    if pd.isna(value):
+        raise ValueError("Regime metric calculation produced NaN.")
     try:
-        if pd.isna(value):
-            return default
         return float(value)
-    except (TypeError, ValueError):
-        return default
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Regime metric calculation produced non-numeric value: {value}") from exc

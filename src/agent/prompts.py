@@ -4,74 +4,41 @@ import json
 from typing import Any, Dict
 
 
-AGENT_RETRAIN_PLAN_PROMPT = """You are a Quant Model Improvement Agent.
+CONFIG_PROPOSAL_PROMPT = """You are a quantitative forecasting assistant.
 
-Your job is to diagnose evidence and propose a safe retrain plan for a LightGBM Quantile challenger.
+Given monitoring context, propose one safe LightGBM Quantile configuration for a retrain attempt.
 
-Use only this evidence:
-- walk-forward validation metrics
-- directional accuracy
-- interval coverage
-- prediction bias
-- quantile crossing
-- forecast distribution
-- drift report
-- regime report
-- risk report
-- news context
-- governance history
-- deterministic retrain policy output
-- allowed config patch keys and ranges
-
-Important:
-1. Your decision is advisory. Deterministic policy decides whether retrain planning is opened.
-2. Do not interpret ACCURACY_OK as model cleared for use.
-3. Use overall_trust_status for final reliability interpretation.
-4. Risk, drift, regime, uncertainty calibration, and news/event context may override an accuracy pass.
-5. Do not hallucinate news or causal explanations.
-6. Do not modify Python source code.
-7. Only use allowed config_patch keys from the policy.
-8. Config values must be numeric and within allowed min/max.
-9. If decision is TRAIN_CHALLENGER, config_patch must be non-empty.
-10. Return valid JSON only.
-11. Do not include markdown.
-12. Do not reveal chain-of-thought.
-13. Provide concise evidence-based reason.
+Rules:
+1. Return valid JSON only.
+2. Do not include markdown.
+3. Do not reveal chain-of-thought.
+4. Do not write or modify Python code.
+5. Only choose values inside the provided parameter ranges.
+6. Keep the reason concise and evidence-based.
 
 Required JSON schema:
 {
-  "diagnosis": "...",
-  "decision": "MONITOR|TRAIN_CHALLENGER|MANUAL_REVIEW",
-  "strategy": "NO_ACTION|RETRAIN_RECENT_WINDOW|WIDEN_INTERVAL|STABILIZE_MODEL|REDUCE_OVERFIT|INCREASE_MODEL_CAPACITY|ADD_REGULARIZATION",
-  "config_patch": {},
-  "reason": "...",
-  "confidence": 0.0,
-  "evidence_used": []
+  "learning_rate": 0.03,
+  "max_depth": 6,
+  "num_leaves": 64,
+  "min_child_samples": 25,
+  "reason": "..."
 }
 """
 
 
-CONFIG_PATCH_REPAIR_PROMPT = """You are repairing an invalid LightGBM config patch.
+CONFIG_REPAIR_PROMPT = """The previous LightGBM configuration JSON was invalid.
 
-Rules:
-1. Previous config_patch was rejected by validation.
-2. Use validation warnings to fix the patch.
-3. Only use allowed keys and numeric values inside min/max ranges.
-4. Keep diagnosis, decision, and strategy unless they are inconsistent with producing a safe patch.
-5. If no safe patch can be produced, return decision MANUAL_REVIEW and an empty config_patch.
-6. Return valid JSON only.
-7. Do not include markdown.
-8. Do not reveal chain-of-thought.
+Return a corrected JSON object using only the allowed parameter ranges.
+Return valid JSON only, without markdown.
 
 Required JSON schema:
 {
-  "diagnosis": "...",
-  "decision": "MONITOR|TRAIN_CHALLENGER|MANUAL_REVIEW",
-  "strategy": "NO_ACTION|RETRAIN_RECENT_WINDOW|WIDEN_INTERVAL|STABILIZE_MODEL|REDUCE_OVERFIT|INCREASE_MODEL_CAPACITY|ADD_REGULARIZATION",
-  "config_patch": {},
-  "reason": "...",
-  "confidence": 0.0,
-  "evidence_used": []
+  "learning_rate": 0.03,
+  "max_depth": 6,
+  "num_leaves": 64,
+  "min_child_samples": 25,
+  "reason": "..."
 }
 """
 
@@ -81,21 +48,12 @@ def build_agent_diagnosis_prompt(
     improvement_config: Dict[str, Any],
     config_patch_policy: Dict[str, Any],
 ) -> str:
-    allowed_patch_keys = list((config_patch_policy.get("allowed_patch_keys") or {}).keys())
+    _ = improvement_config
     payload = {
-        "diagnostics": diagnostics,
-        "trigger_rules": improvement_config.get("trigger_rules", {}),
-        "allowed_decisions": ["MONITOR", "TRAIN_CHALLENGER", "MANUAL_REVIEW"],
-        "allowed_diagnoses": improvement_config.get("allowed_diagnoses", []),
-        "allowed_strategies": improvement_config.get("allowed_strategies", []),
-        "allowed_config_patch_keys": allowed_patch_keys,
-        "config_patch_policy": config_patch_policy,
+        "monitoring_context": diagnostics,
+        "parameter_ranges": _parameter_ranges(config_patch_policy),
     }
-    return (
-        AGENT_RETRAIN_PLAN_PROMPT
-        + "\n\nUse this evidence and policy. Return one JSON object only:\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-    )
+    return CONFIG_PROPOSAL_PROMPT + "\n\nContext:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def build_config_patch_repair_prompt(
@@ -105,15 +63,20 @@ def build_config_patch_repair_prompt(
     config_patch_policy: Dict[str, Any],
     base_config: Dict[str, Any],
 ) -> str:
+    _ = base_config
     payload = {
-        "previous_plan": previous_plan,
+        "previous_config": previous_plan,
         "validation_warnings": validation_warnings,
-        "diagnostics": diagnostics,
-        "config_patch_policy": config_patch_policy,
-        "base_config": base_config,
+        "monitoring_context": diagnostics,
+        "parameter_ranges": _parameter_ranges(config_patch_policy),
     }
-    return (
-        CONFIG_PATCH_REPAIR_PROMPT
-        + "\n\nRepair this plan. Return one JSON object only:\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-    )
+    return CONFIG_REPAIR_PROMPT + "\n\nContext:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _parameter_ranges(policy: Dict[str, Any]) -> Dict[str, list[float]]:
+    allowed = policy.get("allowed_patch_keys", {}) if isinstance(policy, dict) else {}
+    ranges = {}
+    for key in ("learning_rate", "max_depth", "num_leaves", "min_child_samples"):
+        bounds = allowed.get(key, {}) if isinstance(allowed, dict) else {}
+        ranges[key] = [bounds.get("min"), bounds.get("max")]
+    return ranges

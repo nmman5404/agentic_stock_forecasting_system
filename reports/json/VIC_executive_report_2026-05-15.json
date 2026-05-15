@@ -1,17 +1,17 @@
 {
     "metadata": {
         "ticker": "VIC",
-        "run_id": "3ef9fa87",
+        "run_id": "92813861",
         "as_of_date": "2026-05-15",
-        "generated_at": "2026-05-15T05:44:54Z",
+        "generated_at": "2026-05-15T07:59:02Z",
         "report_type": "executive",
         "final_model": "champion"
     },
     "ticker": "VIC",
-    "run_id": "3ef9fa87",
+    "run_id": "92813861",
     "as_of_date": "2026-05-15",
     "forecast_values": {
-        "current_price": 227.0,
+        "current_price": 228.0,
         "as_of_date": "2026-05-15",
         "price_unit_detected": "thousand_vnd",
         "price_scale_note": "Median close is 34.0000; detected unit=thousand_vnd; normalize_to=raw. Model input scale was kept raw.",
@@ -19,67 +19,67 @@
         "forecasts": [
             {
                 "step": 1,
-                "q_0.025": 212.5334109182377,
-                "q_0.1": 221.05592547199944,
-                "q_0.5": 226.93647779765843,
-                "q_0.9": 238.26362760469192,
-                "q_0.975": 241.08464449517348
+                "q_0.025": 213.46968145091716,
+                "q_0.1": 220.01837842137581,
+                "q_0.5": 227.93619796416792,
+                "q_0.9": 239.3132471095584,
+                "q_0.975": 242.9627624380773
             },
             {
                 "step": 2,
-                "q_0.025": 208.85984400599796,
-                "q_0.1": 213.1082164896134,
-                "q_0.5": 228.4057295219919,
-                "q_0.9": 244.53272193001263,
-                "q_0.975": 252.60858109713345
+                "q_0.025": 209.6153763290692,
+                "q_0.1": 213.896705026157,
+                "q_0.5": 229.41192216305794,
+                "q_0.9": 245.39678040819496,
+                "q_0.975": 253.72139422971995
             },
             {
                 "step": 3,
-                "q_0.025": 199.91825027668756,
-                "q_0.1": 215.5532117642836,
-                "q_0.5": 230.66996141864524,
-                "q_0.9": 247.1068822472699,
-                "q_0.975": 262.20306982204505
+                "q_0.025": 200.79894741447032,
+                "q_0.1": 216.50278538439056,
+                "q_0.5": 231.7388226406596,
+                "q_0.9": 248.19545882104643,
+                "q_0.975": 263.3581494247853
             },
             {
                 "step": 4,
-                "q_0.025": 197.99100220675246,
-                "q_0.1": 207.88858498839832,
-                "q_0.5": 230.48335428110553,
-                "q_0.9": 253.30789852772378,
-                "q_0.975": 265.0997235047039
+                "q_0.025": 198.86320926493198,
+                "q_0.1": 208.8043937328406,
+                "q_0.5": 231.49869945415006,
+                "q_0.9": 254.42379235383711,
+                "q_0.975": 266.26756369635456
             },
             {
                 "step": 5,
-                "q_0.025": 197.2993577208335,
-                "q_0.1": 210.33287301683552,
-                "q_0.5": 229.3641313972501,
-                "q_0.9": 257.937236545645,
-                "q_0.975": 270.2266328598762
+                "q_0.025": 198.16851788700458,
+                "q_0.1": 211.25944954994932,
+                "q_0.5": 230.4539651992917,
+                "q_0.9": 259.07352393130867,
+                "q_0.975": 271.41705855529415
             },
             {
                 "step": 6,
-                "q_0.025": 190.27074421512754,
-                "q_0.1": 209.2701646519463,
-                "q_0.5": 231.30311666198804,
-                "q_0.9": 262.57868114787726,
-                "q_0.975": 275.79017905330096
+                "q_0.025": 191.10894132620737,
+                "q_0.1": 210.192059650413,
+                "q_0.5": 233.2197999131447,
+                "q_0.9": 263.73541542606176,
+                "q_0.975": 277.0051137627869
             },
             {
                 "step": 7,
-                "q_0.025": 187.12574088762375,
-                "q_0.1": 216.67037099724152,
-                "q_0.5": 229.177838006849,
-                "q_0.9": 264.4178512141335,
-                "q_0.975": 281.8001643046184
+                "q_0.025": 187.95008335849434,
+                "q_0.1": 217.6248660236611,
+                "q_0.5": 230.18743200687916,
+                "q_0.9": 265.58268756309445,
+                "q_0.975": 283.04157472005727
             }
         ]
     },
     "basic_model_metrics": {
         "evaluation_method": "walk_forward",
-        "mape": 0.028914167947122583,
-        "rmse": 5.606898115786519,
-        "mae": 4.2633010334596335,
+        "mape": 0.028883663425208296,
+        "rmse": 5.603227709506683,
+        "mae": 4.256451718391141,
         "directional_accuracy": 0.5342465753424658,
         "interval_95_coverage": 0.8356164383561644
     },
@@ -89,16 +89,16 @@
         "fold_count": 8,
         "sample_count": 498,
         "feature_count": 28,
-        "mae": 4.2633010334596335,
-        "rmse": 5.606898115786519,
-        "mape": 0.028914167947122583,
-        "smape": 0.028913949680646506,
+        "mae": 4.256451718391141,
+        "rmse": 5.603227709506683,
+        "mape": 0.028883663425208296,
+        "smape": 0.028883844060204923,
         "directional_accuracy": 0.5342465753424658,
         "interval_80_coverage": 0.678082191780822,
         "interval_95_coverage": 0.8356164383561644,
-        "pinball_loss": 1.009178823419412,
-        "prediction_bias": -0.44938124159870424,
-        "prediction_bias_pct": -0.002402018117308343,
+        "pinball_loss": 1.0084938919125626,
+        "prediction_bias": -0.4562305566671974,
+        "prediction_bias_pct": -0.002432522639222626,
         "quantile_crossing_rate": 0.00684931506849315
     },
     "risk_summary": {
@@ -109,9 +109,9 @@
         "risk_reward_ratio": 1.3743,
         "var_95": 0.175658,
         "expected_shortfall": 0.202006,
-        "risk_level": "EXTREME_RISK",
+        "risk_level": "HIGH_RISK",
         "risk_notes": [
-            "High drift severity detected."
+            "Tail loss estimate is elevated."
         ]
     },
     "regime_summary": {
@@ -119,7 +119,6 @@
         "trend_regime": "UPTREND",
         "volume_regime": "NORMAL_VOLUME",
         "final_regime_label": "NORMAL_VOLATILITY__UPTREND__NORMAL_VOLUME",
-        "regime_confidence": 0.63,
         "warnings": [],
         "regime_notes": [
             "Regime components computed independently: volatility=NORMAL_VOLATILITY, trend=UPTREND, volume=NORMAL_VOLUME."
@@ -129,12 +128,11 @@
         "feature_drift_detected": true,
         "target_drift_detected": true,
         "concept_drift_detected": true,
-        "feature_score": 82,
-        "target_score": 1,
-        "concept_score": 2,
-        "total_score": 85,
-        "severity": "HIGH",
-        "recommended_action": "MANUAL_REVIEW",
+        "feature_drift_level": "HIGH",
+        "target_drift_level": "LOW",
+        "concept_drift_level": "MEDIUM",
+        "overall_drift_level": "HIGH",
+        "final_drift_label": "FEATURE_HIGH__TARGET_LOW__CONCEPT_MEDIUM",
         "top_drifted_features": [
             "close",
             "volume",
@@ -143,20 +141,17 @@
             "ma_7"
         ],
         "drift_notes": [
-            "Feature drift score=82 across 16 features.",
-            "Target drift score=1.",
-            "Concept drift score=2."
+            "Feature drift level=HIGH across 16 drifted features.",
+            "Target drift level=LOW.",
+            "Concept drift level=MEDIUM."
         ]
     },
     "news_summary": {
-        "status": "NEWS_FOUND_GOOGLE_NEWS",
+        "status": "NEWS_FOUND_GOOGLE_RSS",
         "found": true,
-        "items_count": 10,
-        "raw_news_items_count": 58,
-        "matched_news_items_count": 10,
+        "items_count": 5,
         "evidence_level": "HIGH",
         "shock_type": "EVENT_DRIVEN",
-        "debug_path": "data\\news_debug\\VIC_news_debug_2026-05-15_3ef9fa87.json",
         "queries": [
             "\"VIC\" \"Vingroup\"",
             "\"cổ phiếu VIC\"",
@@ -166,27 +161,25 @@
         "google_news_used": true
     },
     "improvement": {
-        "agent_decision": "TRAIN_CHALLENGER",
+        "agent_decision": "TRAIN_CANDIDATE",
         "technical_retrain_required": true,
         "technical_retrain_reasons": [
-            "95% interval coverage 0.8356 below minimum 0.8500.",
-            "High drift severity with concept-drift evidence.",
-            "Risk level is EXTREME_RISK with drift severity HIGH."
+            "Risk level is HIGH_RISK."
         ],
-        "technical_retrain_strategy": "RETRAIN_RECENT_WINDOW",
         "retrain_attempted": true,
-        "config_patch_source": "AGENT_PROPOSED",
         "config_patch_validation_status": "VALID",
-        "governance_decision": "KEEP_CHAMPION",
-        "final_model": "champion"
+        "config_decision": "KEEP_CURRENT_CONFIG",
+        "candidate_config_accepted": false,
+        "config_saved": false,
+        "final_run": "champion"
     },
     "final_research_signal": {
-        "signal": "MANUAL_REVIEW",
-        "confidence": 0.6
+        "signal": "WATCH",
+        "confidence": 0.45
     },
     "committee_assessment_summary": {
-        "assessment_summary": "Final research action is MANUAL_REVIEW. Final model=champion; risk_level=EXTREME_RISK; drift_severity=HIGH; governance_decision=KEEP_CHAMPION.",
-        "decision_rationale": "Extreme forecast risk requires manual review.",
-        "final_recommendation": "Final research action is MANUAL_REVIEW. Final model=champion; risk_level=EXTREME_RISK; drift_severity=HIGH; governance_decision=KEEP_CHAMPION. This is research output only, intended for paper-trading review and not financial advice."
+        "assessment_summary": "Final research action is WATCH. Final run=champion; risk=HIGH_RISK; drift=FEATURE_HIGH__TARGET_LOW__CONCEPT_MEDIUM; config_decision=KEEP_CURRENT_CONFIG.",
+        "decision_rationale": "High risk, drift, or news context requires watch state.",
+        "final_recommendation": "Final research action is WATCH. Final run=champion; risk=HIGH_RISK; drift=FEATURE_HIGH__TARGET_LOW__CONCEPT_MEDIUM; config_decision=KEEP_CURRENT_CONFIG. This is research output only, intended for paper-trading review and not financial advice."
     }
 }

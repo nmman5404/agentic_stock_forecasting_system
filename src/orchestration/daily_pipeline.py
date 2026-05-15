@@ -100,7 +100,7 @@ def run_daily_pipeline(target_ticker: str = "VIC"):
     duration = time.perf_counter() - started
     logger.info(
         "Pipeline completed successfully | run_id=%s | ticker=%s | duration_sec=%.2f | health=%s | "
-        "technical_retrain_required=%s | retrain_attempted=%s | governance=%s | final_action=%s | confidence=%.2f",
+        "technical_retrain_required=%s | retrain_attempted=%s | config_decision=%s | final_action=%s | confidence=%.2f",
         run_id,
         target_ticker,
         duration,
@@ -178,6 +178,6 @@ def _configured_max_retries() -> int:
     with config_path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     try:
-        return int((data.get("thresholds") or {}).get("max_retries", 1))
+        return int((data.get("retrain") or {}).get("max_retries", (data.get("thresholds") or {}).get("max_retries", 1)))
     except (TypeError, ValueError):
         return 1

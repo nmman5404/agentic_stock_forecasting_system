@@ -128,21 +128,17 @@ def _build_markdown_report(state: AgentState, today_str: str) -> str:
     risk = _as_dict(candidate.get("risk_report"))
     news = _as_dict(state.get("news"))
     recommendation = _as_dict(state.get("recommendation"))
-    diagnostics = _as_dict(candidate.get("diagnostics"))
-    statuses = _as_dict(diagnostics.get("statuses"))
+    health = _as_dict(state.get("workflow")).get("model_health_status", "UNKNOWN")
 
     return f"""# Quant Research Report: {ticker} ({today_str})
 
 ## Executive Summary
-- Final model: **{final_model}**
+- Final run: **{final_model}**
 - Final research action: **{recommendation.get('final_action', 'MANUAL_REVIEW')}**
 - Confidence: **{_number(recommendation.get('confidence'))}**
-- Accuracy check: **{statuses.get('accuracy_check_status', 'UNKNOWN')}**
-- Walk-forward reliability: **{statuses.get('walk_forward_reliability_status', 'UNKNOWN')}**
-- Risk clearance: **{statuses.get('risk_clearance_status', 'WATCH')}**
-- Overall trust status: **{statuses.get('overall_trust_status', 'REQUIRES_MANUAL_REVIEW')}**
+- Model health: **{health}**
 - Risk level: **{risk.get('risk_level', 'N/A')}**
-- Drift severity: **{drift.get('severity', 'N/A')}**
+- Drift label: **{drift.get('final_drift_label', 'N/A')}**
 - News status: **{news.get('status', 'NO_NEWS')}**
 
 ## Forecast
@@ -168,27 +164,25 @@ def _build_markdown_report(state: AgentState, today_str: str) -> str:
 - Volatility regime: **{regime.get('volatility_regime', 'N/A')}**
 - Trend regime: **{regime.get('trend_regime', 'N/A')}**
 - Volume regime: **{regime.get('volume_regime', 'N/A')}**
-- Drift feature/target/concept scores: **{drift.get('feature_score', 0)} / {drift.get('target_score', 0)} / {drift.get('concept_score', 0)}**
-- Drift recommended action: **{drift.get('recommended_action', 'N/A')}**
+- Drift levels feature/target/concept: **{drift.get('feature_drift_level', 'N/A')} / {drift.get('target_drift_level', 'N/A')} / {drift.get('concept_drift_level', 'N/A')}**
+- Final drift label: **{drift.get('final_drift_label', 'N/A')}**
 
 ## Agent Improvement Plan
 {_improvement_markdown(state)}
 
 ## News Context
-- Google News used: **{news.get('google_news_used', False)}**
 - Evidence level: **{news.get('evidence_level', 'NONE')}**
 - Shock type: **{news.get('shock_type', 'NO_NEWS')}**
-- Raw/matched items: **{news.get('raw_news_items_count', 0)} / {news.get('matched_news_items_count', 0)}**
-- Debug path: `{news.get('debug_path', 'N/A')}`
 
 ```text
 {news.get('context', 'NO_NEWS')}
 ```
 
-## Governance
+## Config Decision
 - Decision: **{_as_dict(state.get('governance')).get('decision', 'NOT_REQUIRED')}**
-- Final model: **{_as_dict(state.get('governance')).get('final_model', final_model)}**
-- Accepted challenger: **{_as_dict(state.get('governance')).get('accepted_challenger', False)}**
+- Final run: **{_as_dict(state.get('governance')).get('final_model', final_model)}**
+- Candidate config accepted: **{_as_dict(state.get('governance')).get('accepted_candidate', False)}**
+- Config saved: **{_as_dict(state.get('governance')).get('config_saved', False)}**
 - Reason: {_as_dict(state.get('governance')).get('reason', 'N/A')}
 
 ## Final Recommendation
@@ -238,13 +232,13 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
         <body>
             <div class="container">
                 <h1>Quant Research Report: {html.escape(ticker)}</h1>
-                <p><b>Report date:</b> {html.escape(today_str)} | <b>Final model:</b> {html.escape(final_model)}</p>
+                <p><b>Report date:</b> {html.escape(today_str)} | <b>Final run:</b> {html.escape(final_model)}</p>
                 <div class="signal"><span>Final research action: {html.escape(action)}</span></div>
                 <div class="grid">
                     <div class="panel"><h3>Risk</h3><p>Level: <b>{risk.get('risk_level', 'N/A')}</b><br>Expected return: {_pct(risk.get('expected_return'))}</p></div>
                     <div class="panel"><h3>Regime</h3><p>{regime.get('final_regime_label', 'N/A')}</p></div>
-                    <div class="panel"><h3>Drift</h3><p>Severity: <b>{drift.get('severity', 'N/A')}</b><br>Total score: {drift.get('total_score', 0)}</p></div>
-                    <div class="panel"><h3>News</h3><p>Status: <b>{news.get('status', 'NO_NEWS')}</b><br>Raw/matched: {news.get('raw_news_items_count', 0)} / {news.get('matched_news_items_count', 0)}</p></div>
+                    <div class="panel"><h3>Drift</h3><p>Label: <b>{drift.get('final_drift_label', 'N/A')}</b><br>Overall level: {drift.get('overall_drift_level', 'N/A')}</p></div>
+                    <div class="panel"><h3>News</h3><p>Status: <b>{news.get('status', 'NO_NEWS')}</b><br>Evidence: {news.get('evidence_level', 'NONE')}</p></div>
                 </div>
                 <div class="section"><h3>Assessment</h3><p>{html.escape(str(recommendation.get('assessment_summary', 'N/A')))}</p><p>{html.escape(str(recommendation.get('decision_rationale', 'N/A')))}</p></div>
                 <div class="section"><h3>Agent Improvement Plan</h3>{_improvement_html(state)}</div>
@@ -327,7 +321,6 @@ def _regime_summary(regime: Dict[str, Any]) -> Dict[str, Any]:
         "trend_regime": regime.get("trend_regime"),
         "volume_regime": regime.get("volume_regime"),
         "final_regime_label": regime.get("final_regime_label"),
-        "regime_confidence": regime.get("regime_confidence"),
         "warnings": regime.get("warnings", []),
         "regime_notes": regime.get("regime_notes", []),
     }
@@ -338,12 +331,11 @@ def _drift_summary(drift: Dict[str, Any]) -> Dict[str, Any]:
         "feature_drift_detected": drift.get("feature_drift_detected"),
         "target_drift_detected": drift.get("target_drift_detected"),
         "concept_drift_detected": drift.get("concept_drift_detected"),
-        "feature_score": drift.get("feature_score"),
-        "target_score": drift.get("target_score"),
-        "concept_score": drift.get("concept_score"),
-        "total_score": drift.get("total_score"),
-        "severity": drift.get("severity"),
-        "recommended_action": drift.get("recommended_action"),
+        "feature_drift_level": drift.get("feature_drift_level"),
+        "target_drift_level": drift.get("target_drift_level"),
+        "concept_drift_level": drift.get("concept_drift_level"),
+        "overall_drift_level": drift.get("overall_drift_level"),
+        "final_drift_label": drift.get("final_drift_label"),
         "top_drifted_features": [
             item.get("feature")
             for item in drift.get("drifted_features", [])[:5]
@@ -358,11 +350,8 @@ def _news_summary(news: Dict[str, Any]) -> Dict[str, Any]:
         "status": news.get("status", "NO_NEWS"),
         "found": news.get("found", False),
         "items_count": news.get("items_count", 0),
-        "raw_news_items_count": news.get("raw_news_items_count", 0),
-        "matched_news_items_count": news.get("matched_news_items_count", 0),
         "evidence_level": news.get("evidence_level", "NONE"),
         "shock_type": news.get("shock_type", "NO_NEWS"),
-        "debug_path": news.get("debug_path"),
         "queries": news.get("queries", []),
         "google_news_used": news.get("google_news_used", False),
     }
@@ -375,12 +364,12 @@ def _improvement_summary(state: AgentState) -> Dict[str, Any]:
         "agent_decision": improvement.get("decision"),
         "technical_retrain_required": improvement.get("technical_retrain_required", False),
         "technical_retrain_reasons": improvement.get("technical_retrain_reasons", []),
-        "technical_retrain_strategy": improvement.get("technical_retrain_strategy"),
         "retrain_attempted": _as_dict(state.get("workflow")).get("retrain_attempted", False),
-        "config_patch_source": improvement.get("config_patch_source"),
         "config_patch_validation_status": improvement.get("config_patch_validation_status"),
-        "governance_decision": governance.get("decision"),
-        "final_model": governance.get("final_model", _final_model_name(state)),
+        "config_decision": governance.get("decision"),
+        "candidate_config_accepted": governance.get("accepted_candidate", False),
+        "config_saved": governance.get("config_saved", False),
+        "final_run": governance.get("final_model", _final_model_name(state)),
     }
 
 
@@ -389,11 +378,8 @@ def _config_patch_validation_result(state: AgentState) -> Dict[str, Any]:
     return {
         "config_patch_valid": improvement.get("config_patch_valid"),
         "config_patch_validation_status": improvement.get("config_patch_validation_status", "NOT_REQUIRED"),
-        "config_patch_source": improvement.get("config_patch_source", "NOT_REQUIRED"),
         "config_patch_warnings": improvement.get("config_patch_warnings", []),
         "validated_config_patch": improvement.get("validated_config_patch", {}),
-        "repair_attempts": improvement.get("repair_attempts", 0),
-        "repair_history": improvement.get("repair_history", []),
     }
 
 
@@ -403,16 +389,16 @@ def _improvement_markdown(state: AgentState) -> str:
     workflow = _as_dict(state.get("workflow"))
     return "\n".join(
         [
-            f"- Agent diagnosis: **{improvement.get('diagnosis', 'N/A')}**",
-            f"- Agent decision: **{improvement.get('decision', 'N/A')}**",
+            f"- Gemini decision: **{improvement.get('decision', 'N/A')}**",
             f"- Technical retrain required: **{improvement.get('technical_retrain_required', False)}**",
             f"- Technical retrain reasons: {_join_notes(improvement.get('technical_retrain_reasons', []))}",
-            f"- Technical retrain strategy: **{improvement.get('technical_retrain_strategy', 'NO_ACTION')}**",
-            f"- Config patch source: **{improvement.get('config_patch_source', 'NOT_REQUIRED')}**",
+            f"- Proposed config: `{improvement.get('config_patch', {})}`",
             f"- Config patch validation: **{improvement.get('config_patch_validation_status', 'NOT_REQUIRED')}**",
             f"- Retrain attempted: **{workflow.get('retrain_attempted', False)}**",
-            f"- Governance decision: **{governance.get('decision', 'NOT_REQUIRED')}**",
-            f"- Final model: **{governance.get('final_model', _final_model_name(state))}**",
+            f"- Config decision: **{governance.get('decision', 'NOT_REQUIRED')}**",
+            f"- Candidate config accepted: **{governance.get('accepted_candidate', False)}**",
+            f"- Config saved: **{governance.get('config_saved', False)}**",
+            f"- Final run: **{governance.get('final_model', _final_model_name(state))}**",
             f"- Reason: {governance.get('reason', improvement.get('reason', 'N/A'))}",
         ]
     )

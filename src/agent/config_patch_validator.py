@@ -1,107 +1,74 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
-FORBIDDEN_KEY_FRAGMENTS = (
-    "path",
-    "file",
-    "import",
-    "code",
-    "env",
-    "exec",
-    "eval",
-    "subprocess",
-    "os.",
-    "sys.",
-)
+DEFAULT_PARAMETER_RANGES: Dict[str, tuple[float, float]] = {
+    "learning_rate": (0.005, 0.2),
+    "max_depth": (3, 12),
+    "num_leaves": (16, 256),
+    "min_child_samples": (5, 100),
+}
+
+INTEGER_KEYS = {"max_depth", "num_leaves", "min_child_samples"}
 
 
 def validate_config_patch(
     patch: dict,
-    policy: dict,
-    base_config: dict,
-    decision: Optional[str] = None,
+    policy: dict | None = None,
+    base_config: dict | None = None,
+    decision: str | None = None,
 ) -> Tuple[dict, List[str], bool]:
+    """Validate Gemini-proposed LightGBM parameters.
+
+    The validator is intentionally small: allowed key, numeric value, range.
+    Gemini handles reasoning; this function only protects the config file.
+    """
+    _ = base_config, decision
+    ranges = _parameter_ranges(policy)
     warnings: List[str] = []
-    validated_patch: Dict[str, Any] = {}
+    valid_patch: Dict[str, Any] = {}
 
-    patch = patch or {}
-    if not isinstance(patch, dict):
-        return {}, ["Config patch must be a flat dictionary."], False
-
-    allowed_patch_keys = policy.get("allowed_patch_keys", {})
-    policy_rules = policy.get("policy", {})
-    if not isinstance(allowed_patch_keys, dict):
-        return {}, ["Config patch policy is missing allowed_patch_keys."], False
-    if not isinstance(policy_rules, dict):
-        policy_rules = {}
-
-    require_non_empty = bool(policy_rules.get("require_non_empty_patch_for_train_challenger", False))
-    if decision in {"TRAIN_CHALLENGER", "RETRAIN_RECENT_WINDOW"} and require_non_empty and not patch:
-        return {}, ["TRAIN_CHALLENGER/RETRAIN_RECENT_WINDOW requires a non-empty config patch."], False
-
-    reject_unknown = bool(policy_rules.get("reject_unknown_keys", True))
-    clamp_out_of_range = bool(policy_rules.get("clamp_out_of_range_values", False))
+    if not isinstance(patch, dict) or not patch:
+        return {}, ["Config proposal must be a non-empty object."], False
 
     for key, value in patch.items():
-        key_text = str(key)
-        key_lower = key_text.lower()
-
-        if any(fragment in key_lower for fragment in FORBIDDEN_KEY_FRAGMENTS):
-            warnings.append(f"Rejected unsafe patch key: {key_text}.")
-            return {}, warnings, False
-
-        if key_text not in allowed_patch_keys:
-            message = f"Unknown config patch key rejected: {key_text}."
-            warnings.append(message)
-            if reject_unknown:
-                return {}, warnings, False
+        if key == "reason":
             continue
-
-        if isinstance(value, (dict, list, tuple, set)):
-            warnings.append(f"Nested or collection patch value rejected for key: {key_text}.")
-            return {}, warnings, False
-
-        if isinstance(value, bool) or value is None:
-            warnings.append(f"Non-numeric patch value rejected for key: {key_text}.")
-            return {}, warnings, False
-
+        if key not in ranges:
+            warnings.append(f"Unsupported parameter: {key}.")
+            continue
         try:
             numeric_value = float(value)
         except (TypeError, ValueError):
-            warnings.append(f"Non-numeric patch value rejected for key: {key_text}.")
-            return {}, warnings, False
+            warnings.append(f"Parameter {key} must be numeric.")
+            continue
 
-        bounds = allowed_patch_keys.get(key_text, {})
-        min_value = bounds.get("min")
-        max_value = bounds.get("max")
-        if min_value is not None and numeric_value < float(min_value):
-            if not clamp_out_of_range:
-                warnings.append(f"Patch value for {key_text} below minimum {min_value}: {numeric_value}.")
-                return {}, warnings, False
-            numeric_value = float(min_value)
-            warnings.append(f"Patch value for {key_text} clamped to minimum {min_value}.")
+        low, high = ranges[key]
+        if numeric_value < low or numeric_value > high:
+            warnings.append(f"Parameter {key}={numeric_value} outside allowed range [{low}, {high}].")
+            continue
 
-        if max_value is not None and numeric_value > float(max_value):
-            if not clamp_out_of_range:
-                warnings.append(f"Patch value for {key_text} above maximum {max_value}: {numeric_value}.")
-                return {}, warnings, False
-            numeric_value = float(max_value)
-            warnings.append(f"Patch value for {key_text} clamped to maximum {max_value}.")
+        valid_patch[key] = int(round(numeric_value)) if key in INTEGER_KEYS else float(numeric_value)
 
-        validated_patch[key_text] = _preserve_numeric_type(key_text, numeric_value, base_config)
+    required = set(ranges)
+    missing = sorted(required - set(valid_patch))
+    if missing:
+        warnings.append(f"Missing required parameters: {', '.join(missing)}.")
 
-    return validated_patch, warnings, True
+    return valid_patch, warnings, not warnings
 
 
-def _preserve_numeric_type(key: str, value: float, base_config: Dict[str, Any]) -> Any:
-    if key == "train_window_days":
-        return int(round(value))
+def _parameter_ranges(policy: dict | None) -> Dict[str, tuple[float, float]]:
+    allowed = (policy or {}).get("allowed_patch_keys", {})
+    if not isinstance(allowed, dict) or not allowed:
+        return dict(DEFAULT_PARAMETER_RANGES)
 
-    params = base_config.get("lightgbm_params", {}) if isinstance(base_config, dict) else {}
-    current_value = params.get(key) if isinstance(params, dict) else None
-    integer_keys = {"max_depth", "num_leaves", "n_estimators", "min_child_samples"}
-    if key in integer_keys or isinstance(current_value, int):
-        return int(round(value))
-    return float(value)
+    ranges: Dict[str, tuple[float, float]] = {}
+    for key in DEFAULT_PARAMETER_RANGES:
+        bounds = allowed.get(key)
+        if isinstance(bounds, dict) and "min" in bounds and "max" in bounds:
+            ranges[key] = (float(bounds["min"]), float(bounds["max"]))
+        else:
+            ranges[key] = DEFAULT_PARAMETER_RANGES[key]
+    return ranges

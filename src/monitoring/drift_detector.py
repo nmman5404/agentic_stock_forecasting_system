@@ -9,11 +9,13 @@ from utils.logger import get_logger
 
 logger = get_logger("DriftDetector")
 
-EVIDENCE_SCORE = {
-    "NONE": 0,
-    "WEAK": 1,
-    "MODERATE": 2,
-    "STRONG": 3,
+DRIFT_LEVELS = ("NONE", "LOW", "MEDIUM", "HIGH")
+LEVEL_ORDER = {level: idx for idx, level in enumerate(DRIFT_LEVELS)}
+EVIDENCE_TO_LEVEL = {
+    "NONE": "NONE",
+    "WEAK": "LOW",
+    "MODERATE": "MEDIUM",
+    "STRONG": "HIGH",
 }
 
 
@@ -22,83 +24,79 @@ def detect_drift(
     current_df: pd.DataFrame,
     validation_metrics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if not isinstance(reference_df, pd.DataFrame) or not isinstance(current_df, pd.DataFrame):
+        raise TypeError("Drift detection requires pandas DataFrame inputs.")
     if reference_df.empty or current_df.empty:
-        return _empty_report("Insufficient data for drift detection.")
+        raise ValueError("Drift detection requires non-empty reference and current datasets.")
 
-    feature_drift = _feature_drift(reference_df, current_df)
-    target_drift = _target_drift(reference_df, current_df)
-    concept_drift = _concept_drift(validation_metrics)
+    drift_notes: List[str] = []
+    feature_drift = _feature_drift(reference_df, current_df, drift_notes)
+    target_drift = _target_drift(reference_df, current_df, drift_notes)
+    concept_drift = _concept_drift(validation_metrics, drift_notes)
 
-    feature_score = int(feature_drift["score"])
-    target_score = int(target_drift["score"])
-    concept_score = int(concept_drift["score"])
-    total_score = feature_score + target_score + concept_score
+    feature_level = feature_drift["level"]
+    target_level = target_drift["level"]
+    concept_level = concept_drift["level"]
+    overall_level = _max_level([feature_level, target_level, concept_level])
+    final_drift_label = f"FEATURE_{feature_level}__TARGET_{target_level}__CONCEPT_{concept_level}"
 
-    severity = _severity(total_score)
-    recommended_action = _recommended_action(severity)
     evidence_summary = _evidence_summary(feature_drift, target_drift, concept_drift)
-    drift_notes = evidence_summary or ["No material drift evidence detected."]
+    if not drift_notes:
+        drift_notes.extend(evidence_summary or ["No material drift evidence detected."])
 
     report = {
-        "feature_drift_detected": feature_score > 0,
-        "target_drift_detected": target_score > 0,
-        "concept_drift_detected": concept_score > 0,
+        "feature_drift_level": feature_level,
+        "target_drift_level": target_level,
+        "concept_drift_level": concept_level,
+        "overall_drift_level": overall_level,
+        "final_drift_label": final_drift_label,
+        "feature_drift_detected": feature_level != "NONE",
+        "target_drift_detected": target_level != "NONE",
+        "concept_drift_detected": concept_level != "NONE",
         "feature_drift": feature_drift,
         "target_drift": target_drift,
         "concept_drift": concept_drift,
-        "feature_score": feature_score,
-        "target_score": target_score,
-        "concept_score": concept_score,
-        "total_score": total_score,
-        "severity": severity,
-        "recommended_action": recommended_action,
+        "drifted_features": feature_drift.get("drifted_features", []),
         "evidence_summary": evidence_summary,
         "drift_notes": drift_notes,
-        "drifted_features": feature_drift["features"],
     }
     logger.info(
-        "Drift report generated | severity=%s | total_score=%s | feature=%s | target=%s | concept=%s",
-        severity,
-        total_score,
-        feature_score,
-        target_score,
-        concept_score,
+        "Drift report generated | label=%s | feature=%s | target=%s | concept=%s",
+        final_drift_label,
+        feature_level,
+        target_level,
+        concept_level,
     )
     return report
 
 
-def _empty_report(reason: str) -> Dict[str, Any]:
-    return {
-        "feature_drift_detected": False,
-        "target_drift_detected": False,
-        "concept_drift_detected": False,
-        "feature_drift": {"detected": False, "score": 0, "features": []},
-        "target_drift": {"detected": False, "score": 0, "metrics": {}},
-        "concept_drift": {"detected": False, "score": 0, "metrics": {}},
-        "feature_score": 0,
-        "target_score": 0,
-        "concept_score": 0,
-        "total_score": 0,
-        "severity": "LOW",
-        "recommended_action": "MONITOR",
-        "evidence_summary": [],
-        "drift_notes": [reason],
-        "drifted_features": [],
-    }
-
-
-def _feature_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> Dict[str, Any]:
+def _feature_drift(
+    reference_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    drift_notes: List[str],
+) -> Dict[str, Any]:
     numeric_cols = [
         col
         for col in reference_df.columns
         if col in current_df.columns and pd.api.types.is_numeric_dtype(reference_df[col])
     ]
+    if not numeric_cols:
+        drift_notes.append("Feature drift not evaluated because no shared numeric columns were available.")
+        return {
+            "level": "NONE",
+            "detected": False,
+            "features": [],
+            "drifted_features": [],
+            "evaluated_feature_count": 0,
+        }
 
     features: List[Dict[str, Any]] = []
+    skipped_features = 0
     for col in _priority_features(numeric_cols):
         ref = reference_df[col].replace([np.inf, -np.inf], np.nan).dropna()
         cur = current_df[col].replace([np.inf, -np.inf], np.nan).dropna()
         if len(ref) < 20 or len(cur) < 5:
+            skipped_features += 1
             continue
 
         ref_std = float(ref.std() or 0.0)
@@ -109,48 +107,66 @@ def _feature_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> Dict
         mean_evidence = _mean_shift_evidence(mean_shift_z)
         std_evidence = _std_ratio_evidence(std_ratio)
         psi_evidence = _psi_evidence(psi)
-        feature_score = (
-            EVIDENCE_SCORE[mean_evidence]
-            + EVIDENCE_SCORE[std_evidence]
-            + EVIDENCE_SCORE[psi_evidence]
+        feature_level = _max_level(
+            [
+                _evidence_to_level(mean_evidence),
+                _evidence_to_level(std_evidence),
+                _evidence_to_level(psi_evidence),
+            ]
         )
 
-        if feature_score > 0:
-            features.append(
-                {
-                    "feature": col,
-                    "mean_shift_z": round(mean_shift_z, 6),
-                    "mean_shift_evidence": mean_evidence,
-                    "std_ratio": round(std_ratio, 6),
-                    "std_ratio_evidence": std_evidence,
-                    "psi": round(psi, 6),
-                    "psi_evidence": psi_evidence,
-                    "feature_score": feature_score,
-                }
-            )
+        features.append(
+            {
+                "feature": col,
+                "mean_shift_z": round(mean_shift_z, 6),
+                "mean_shift_evidence": mean_evidence,
+                "std_ratio": round(std_ratio, 6),
+                "std_ratio_evidence": std_evidence,
+                "psi": round(psi, 6),
+                "psi_evidence": psi_evidence,
+                "feature_drift_level": feature_level,
+            }
+        )
 
-    score = sum(item["feature_score"] for item in features)
-    return {"detected": score > 0, "score": score, "features": features}
+    if not features:
+        drift_notes.append("Feature drift not evaluated because shared numeric columns had insufficient samples.")
+
+    drifted_features = [item for item in features if item["feature_drift_level"] != "NONE"]
+    level = _max_level([item["feature_drift_level"] for item in features])
+    return {
+        "level": level,
+        "detected": level != "NONE",
+        "features": features,
+        "drifted_features": drifted_features,
+        "evaluated_feature_count": len(features),
+        "skipped_feature_count": skipped_features,
+    }
 
 
-def _target_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> Dict[str, Any]:
+def _target_drift(
+    reference_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    drift_notes: List[str],
+) -> Dict[str, Any]:
     if "close" not in reference_df.columns or "close" not in current_df.columns:
-        return {"detected": False, "score": 0, "metrics": {}}
+        drift_notes.append("Target drift not evaluated because close price is unavailable.")
+        return {"level": "NONE", "detected": False, "metrics": {}}
 
     ref_returns = reference_df["close"].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
     cur_returns = current_df["close"].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
     if len(ref_returns) < 20 or len(cur_returns) < 5:
-        return {"detected": False, "score": 0, "metrics": {}}
+        drift_notes.append("Target drift not evaluated because return samples are insufficient.")
+        return {"level": "NONE", "detected": False, "metrics": {}}
 
     ref_std = float(ref_returns.std() or 0.0)
     mean_shift_z = abs(float(cur_returns.mean() - ref_returns.mean())) / ref_std if ref_std > 0 else 0.0
     volatility_ratio = float(cur_returns.std() / ref_std) if ref_std > 0 else 1.0
     mean_evidence = _target_mean_evidence(mean_shift_z)
     vol_evidence = _target_vol_evidence(volatility_ratio)
-    score = EVIDENCE_SCORE[mean_evidence] + EVIDENCE_SCORE[vol_evidence]
+    level = _max_level([_evidence_to_level(mean_evidence), _evidence_to_level(vol_evidence)])
     return {
-        "detected": score > 0,
-        "score": score,
+        "level": level,
+        "detected": level != "NONE",
         "metrics": {
             "return_mean_shift_z": round(mean_shift_z, 6),
             "return_mean_shift_evidence": mean_evidence,
@@ -160,37 +176,49 @@ def _target_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> Dict[
     }
 
 
-def _concept_drift(validation_metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _concept_drift(
+    validation_metrics: Optional[Dict[str, Any]],
+    drift_notes: List[str],
+) -> Dict[str, Any]:
     metrics = validation_metrics.get("metrics") if isinstance(validation_metrics, dict) else {}
     if not isinstance(metrics, dict) or not metrics:
-        return {"detected": False, "score": 0, "metrics": {}}
+        drift_notes.append("Concept drift not evaluated because validation metrics are unavailable.")
+        return {"level": "NONE", "detected": False, "metrics": {}}
 
     mape = _safe_float(metrics.get("mape"))
-    directional_accuracy = _safe_float(metrics.get("directional_accuracy"), default=1.0)
-    interval_95_coverage = _safe_float(
-        metrics.get("interval_95_coverage", metrics.get("interval_coverage")),
-        default=1.0,
-    )
-    mape_evidence = _concept_mape_evidence(mape)
-    da_evidence = _directional_accuracy_evidence(directional_accuracy)
-    coverage_evidence = _interval_coverage_evidence(interval_95_coverage)
-    score = (
-        EVIDENCE_SCORE[mape_evidence]
-        + EVIDENCE_SCORE[da_evidence]
-        + EVIDENCE_SCORE[coverage_evidence]
-    )
-    return {
-        "detected": score > 0,
-        "score": score,
-        "metrics": {
-            "mape": round(mape, 6),
-            "mape_evidence": mape_evidence,
-            "directional_accuracy": round(directional_accuracy, 6),
-            "directional_accuracy_evidence": da_evidence,
-            "interval_95_coverage": round(interval_95_coverage, 6),
-            "interval_coverage_evidence": coverage_evidence,
-        },
-    }
+    directional_accuracy = _safe_float(metrics.get("directional_accuracy"))
+    interval_95_coverage = _safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage")))
+
+    metric_payload: Dict[str, Any] = {}
+    levels: List[str] = []
+    if mape is not None:
+        mape_evidence = _concept_mape_evidence(mape)
+        metric_payload.update({"mape": round(mape, 6), "mape_evidence": mape_evidence})
+        levels.append(_evidence_to_level(mape_evidence))
+    if directional_accuracy is not None:
+        da_evidence = _directional_accuracy_evidence(directional_accuracy)
+        metric_payload.update(
+            {
+                "directional_accuracy": round(directional_accuracy, 6),
+                "directional_accuracy_evidence": da_evidence,
+            }
+        )
+        levels.append(_evidence_to_level(da_evidence))
+    if interval_95_coverage is not None:
+        coverage_evidence = _interval_coverage_evidence(interval_95_coverage)
+        metric_payload.update(
+            {
+                "interval_95_coverage": round(interval_95_coverage, 6),
+                "interval_coverage_evidence": coverage_evidence,
+            }
+        )
+        levels.append(_evidence_to_level(coverage_evidence))
+
+    if not levels:
+        drift_notes.append("Concept drift not evaluated because validation metrics were present but unusable.")
+
+    level = _max_level(levels)
+    return {"level": level, "detected": level != "NONE", "metrics": metric_payload}
 
 
 def _priority_features(numeric_cols: List[str]) -> List[str]:
@@ -294,22 +322,6 @@ def _interval_coverage_evidence(value: float) -> str:
     return "STRONG"
 
 
-def _severity(total_score: int) -> str:
-    if total_score >= 8:
-        return "HIGH"
-    if total_score >= 4:
-        return "MEDIUM"
-    return "LOW"
-
-
-def _recommended_action(severity: str) -> str:
-    if severity == "HIGH":
-        return "MANUAL_REVIEW"
-    if severity == "MEDIUM":
-        return "REVALIDATE"
-    return "MONITOR"
-
-
 def _evidence_summary(
     feature_drift: Dict[str, Any],
     target_drift: Dict[str, Any],
@@ -317,11 +329,14 @@ def _evidence_summary(
 ) -> List[str]:
     summary: List[str] = []
     if feature_drift["detected"]:
-        summary.append(f"Feature drift score={feature_drift['score']} across {len(feature_drift['features'])} features.")
+        summary.append(
+            f"Feature drift level={feature_drift['level']} across "
+            f"{len(feature_drift.get('drifted_features', []))} drifted features."
+        )
     if target_drift["detected"]:
-        summary.append(f"Target drift score={target_drift['score']}.")
+        summary.append(f"Target drift level={target_drift['level']}.")
     if concept_drift["detected"]:
-        summary.append(f"Concept drift score={concept_drift['score']}.")
+        summary.append(f"Concept drift level={concept_drift['level']}.")
     return summary
 
 
@@ -337,8 +352,20 @@ def _psi(reference: pd.Series, current: pd.Series, buckets: int = 10) -> float:
     return float(np.sum((cur_pct - ref_pct) * np.log(cur_pct / ref_pct)))
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _evidence_to_level(evidence: str) -> str:
+    return EVIDENCE_TO_LEVEL.get(str(evidence).upper(), "NONE")
+
+
+def _max_level(levels: List[str]) -> str:
+    if not levels:
+        return "NONE"
+    return max((str(level).upper() for level in levels), key=lambda level: LEVEL_ORDER.get(level, 0))
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
-        return default
+        return None
