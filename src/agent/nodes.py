@@ -101,15 +101,19 @@ def node_llm_retrain_compare(state: AgentState) -> AgentState:
     logger.info("Node execution | llm_retrain_compare")
     ticker = state.get("ticker", "UNKNOWN")
     
+    # Lấy danh sách đã thất bại
+    rejected = state.get("rejected_configs", [])
+    rejected_str = format_json(rejected) if rejected else "Chưa có cấu hình nào bị từ chối."
+    
     # 1. Xin config mới
     prompt_propose = PROPOSE_CONFIG_PROMPT.format(
         data=format_json(state.get("validation_metrics", {}).get("metrics")),
         news=state.get("news_context", "NO_NEWS"),
-        current_config=format_json(state.get("current_config", {}))
+        current_config=format_json(state.get("current_config", {})),
+        rejected_configs=rejected_str  # Truyền trí nhớ vào đây
     )
     new_params = _ask_gemini(prompt_propose)
     
-    # Nếu LLM không trả về đủ tham số chuẩn thì bỏ qua, tăng retry
     if not all(k in new_params for k in ["learning_rate", "max_depth", "num_leaves"]):
         logger.warning("LLM proposed invalid config parameters.")
         state["retry_count"] = state.get("retry_count", 0) + 1
@@ -121,8 +125,7 @@ def node_llm_retrain_compare(state: AgentState) -> AgentState:
 
     # 2. Retrain
     df_processed = load_from_sqlite(f"processed_{ticker}")
-    new_forecast = generate_7_day_forecast(df_processed, model_params=merged_config)
-    new_forecast["ticker"] = ticker
+    new_forecast = generate_7_day_forecast(df_processed, ticker=ticker, model_params=merged_config)
     new_metrics = new_forecast.get("validation_metrics", {})
     
     # 3. LLM So sánh
@@ -133,13 +136,13 @@ def node_llm_retrain_compare(state: AgentState) -> AgentState:
     compare_result = _ask_gemini(prompt_compare)
     is_better = compare_result.get("is_better", False)
     
-    
     # 4. Quyết định
     logger.info("Retrain attempt complete | is_better=%s | reasoning=%s", is_better, compare_result.get("reasoning"))
     if is_better:
         state["forecast_data"] = new_forecast
         state["validation_metrics"] = new_metrics
         state["current_config"] = merged_config
+        state["rejected_configs"] = [] # Reset lại danh sách thất bại nếu tìm được config ngon
 
         import yaml
         with open("configs/model_config.yaml", "r", encoding="utf-8") as f:
@@ -149,6 +152,12 @@ def node_llm_retrain_compare(state: AgentState) -> AgentState:
         
         with open("configs/model_config.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(full_config, f, sort_keys=False)
+    else:
+        # THÊM VÀO KÝ ỨC THẤT BẠI
+        state.setdefault("rejected_configs", []).append({
+            "tried_params": new_params,
+            "reason_it_failed": compare_result.get("reasoning")
+        })
 
     state["retry_count"] = state.get("retry_count", 0) + 1
     return state

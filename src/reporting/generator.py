@@ -58,6 +58,7 @@ def _build_json_payload(state: AgentState, report_type: str) -> Dict[str, Any]:
         "validation_metrics": state.get("validation_metrics", {}),
         "monitoring": state.get("monitoring", {}),
         "current_config": state.get("current_config", {}),
+        "rejected_configs": state.get("rejected_configs", []),
         "evaluation": state.get("evaluation", {}),
         "news_context": state.get("news_context", ""),
         "final_report": state.get("final_report", {}),
@@ -82,6 +83,11 @@ def _build_markdown_report(state: AgentState, today_str: str) -> str:
     val = state.get("validation_metrics", {}).get("metrics", {})
     fc = state.get("forecast_data", {})
     
+    rejected = state.get("rejected_configs", [])
+    rejected_md = "\n".join([f"  - Thử nghiệm bị loại: {r.get('reason_it_failed', '')}" for r in rejected])
+    if not rejected_md:
+        rejected_md = "  - Không có thử nghiệm nào bị loại."
+
     return f"""# Quant Research Report: {ticker} ({today_str})
 
 ## 1. Executive Summary
@@ -106,17 +112,23 @@ def _build_markdown_report(state: AgentState, today_str: str) -> str:
 ## 4. Model Validation (Walk-forward)
 - MAPE: {_safe_pct(val.get('mape'))}
 - Directional Accuracy: {_safe_pct(val.get('directional_accuracy'))}
-- Interval Coverage 95%: {_safe_pct(val.get('interval_95_coverage'))}
+- Interval Coverage 80%: **{_safe_pct(val.get('interval_80_coverage'))}**
+- Interval Coverage 95%: **{_safe_pct(val.get('interval_95_coverage'))}**
 
 ## 5. Agent Workflow Logs
-- LLM Evaluation Reason: {eval_dict.get('reasoning', 'N/A')}
-- News Context Found: {"Yes" if state.get('news_context') else "No"}
+- **LLM Evaluation Reason:** {eval_dict.get('reasoning', 'N/A')}
+- **News Context Found:** {"Yes" if state.get('news_context') else "No"}
+- **Retries Attempted:** {state.get('retry_count', 0)}
+- **Reflection & Self-Correction:**
+{rejected_md}
 """
 
 def _build_html_report(state: AgentState, today_str: str) -> str:
     ticker = state.get("ticker", "UNKNOWN")
     final = state.get("final_report", {})
     action = final.get("action", "MANUAL_REVIEW")
+    val = state.get("validation_metrics", {}).get("metrics", {})
+    eval_dict = state.get("evaluation", {})
     
     bg_color = "#f3f4f6"
     text_color = "#1f2937"
@@ -124,31 +136,82 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
     elif action == "SELL": bg_color, text_color = "#fde8e8", "#9b1c1c"
     elif action == "WATCH": bg_color, text_color = "#fef3c7", "#92400e"
 
-    # Chart
+    # Chart - Đã bổ sung 80% interval
     forecasts = state.get("forecast_data", {}).get("forecasts", [])
     chart_div = "<p>No forecast data available.</p>"
     if forecasts:
         steps = [f"T+{item.get('step')}" for item in forecasts]
         fig = go.Figure()
+        
+        # 95% interval (Outer, nhạt)
         fig.add_trace(go.Scatter(x=steps + steps[::-1],
             y=[item.get("q_0.975") for item in forecasts] + [item.get("q_0.025") for item in forecasts][::-1],
-            fill="toself", fillcolor="rgba(47, 128, 237, 0.14)", line=dict(color="rgba(255,255,255,0)"), name="95% interval"))
-        fig.add_trace(go.Scatter(x=steps, y=[item.get("q_0.5") for item in forecasts], mode="lines+markers", name="Median forecast"))
-        fig.update_layout(title=f"7-day quantile forecast for {ticker}", template="plotly_white")
+            fill="toself", fillcolor="rgba(47, 128, 237, 0.15)", line=dict(color="rgba(255,255,255,0)"), name="95% Interval"))
+        
+        # 80% interval (Inner, đậm hơn một chút)
+        fig.add_trace(go.Scatter(x=steps + steps[::-1],
+            y=[item.get("q_0.9") for item in forecasts] + [item.get("q_0.1") for item in forecasts][::-1],
+            fill="toself", fillcolor="rgba(47, 128, 237, 0.3)", line=dict(color="rgba(255,255,255,0)"), name="80% Interval"))
+            
+        # Median Forecast
+        fig.add_trace(go.Scatter(x=steps, y=[item.get("q_0.5") for item in forecasts], mode="lines+markers", line=dict(color="#1e40af", width=2), name="Median Forecast"))
+        
+        fig.update_layout(title=f"7-Day Quantile Forecast for {ticker}", template="plotly_white")
         chart_div = fig.to_html(full_html=False, include_plotlyjs="cdn")
+
+    # Workflow Logs HTML
+    rejected = state.get("rejected_configs", [])
+    rejected_html = "".join([f"<li><i>Từ chối:</i> {html.escape(r.get('reason_it_failed', ''))}</li>" for r in rejected])
+    if not rejected_html:
+        rejected_html = "<li>Không có thử nghiệm nào bị loại.</li>"
 
     return f"""
     <html>
-        <head><style>body {{ font-family: sans-serif; padding: 20px; line-height: 1.6; }} .signal {{ padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; background: {bg_color}; color: {text_color}; text-align: center; }} .section {{ margin-top: 20px; padding: 15px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb; }}</style></head>
+        <head><style>
+            body {{ font-family: 'Segoe UI', Tahoma, sans-serif; padding: 20px; line-height: 1.6; background-color: #f8f9fa; color: #374151; }}
+            .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
+            .signal {{ padding: 15px; border-radius: 8px; font-size: 22px; font-weight: bold; background: {bg_color}; color: {text_color}; text-align: center; margin-bottom: 20px; }}
+            .section {{ margin-top: 20px; padding: 20px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb; }}
+            .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 15px; }}
+            .metric-box {{ background: white; padding: 15px; border: 1px solid #e5e7eb; border-radius: 6px; text-align: center; }}
+            .metric-box h4 {{ margin: 0 0 5px 0; font-size: 14px; color: #6b7280; }}
+            .metric-box span {{ font-size: 18px; font-weight: bold; color: #111827; }}
+            ul {{ margin-top: 5px; }}
+        </style></head>
         <body>
-            <h1>Quant Research Report: {ticker} ({today_str})</h1>
-            <div class="signal">Final Action: {action}</div>
-            <div class="section">
-                <h3>Assessment Summary</h3>
-                <p>{html.escape(final.get('summary', ''))}</p>
-                <p><b>Reasoning:</b> {html.escape(final.get('reasoning', ''))}</p>
+            <div class="container">
+                <h1>Quant Research Report: {ticker} ({today_str})</h1>
+                <div class="signal">Final Action: {action}</div>
+                
+                <div class="section">
+                    <h3>Assessment Summary</h3>
+                    <p>{html.escape(final.get('summary', ''))}</p>
+                    <p><b>Reasoning:</b> {html.escape(final.get('reasoning', ''))}</p>
+                </div>
+                
+                <div class="metrics-grid">
+                    <div class="metric-box"><h4>MAPE</h4><span>{_safe_pct(val.get('mape'))}</span></div>
+                    <div class="metric-box"><h4>Coverage 80%</h4><span>{_safe_pct(val.get('interval_80_coverage'))}</span></div>
+                    <div class="metric-box"><h4>Coverage 95%</h4><span>{_safe_pct(val.get('interval_95_coverage'))}</span></div>
+                </div>
+
+                <div class="section" style="background: white; padding:0; border:none; margin-top: 30px;">
+                    {chart_div}
+                </div>
+                
+                <div class="section" style="background: #1f2937; color: #f3f4f6;">
+                    <h3 style="color: white; margin-top:0;">Agent Workflow Logs (System Observability)</h3>
+                    <ul>
+                        <li><b>LLM Evaluation Reason:</b> {html.escape(eval_dict.get('reasoning', 'N/A'))}</li>
+                        <li><b>News Context Found:</b> {"Yes" if state.get('news_context') else "No"}</li>
+                        <li><b>Retries Attempted:</b> {state.get('retry_count', 0)}</li>
+                    </ul>
+                    <b style="margin-left: 20px;">Reflection & Self-Correction (Auto-tuning):</b>
+                    <ul style="color: #9ca3af;">
+                        {rejected_html}
+                    </ul>
+                </div>
             </div>
-            {chart_div}
         </body>
     </html>
     """

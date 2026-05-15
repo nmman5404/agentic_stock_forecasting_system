@@ -1,7 +1,8 @@
 @"
 data/
 logs/
-models/
+reports/
+logs/
 .env
 __pycache__/
 *.pyc

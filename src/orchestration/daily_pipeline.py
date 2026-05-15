@@ -8,13 +8,15 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from src.agent.graph import build_agent_graph
-from src.ingestion.vnstock_api import get_vingroup_and_context_data
+
+from src.ingestion.vnstock_api import get_market_data
 from src.modeling.predictor import generate_7_day_forecast
+
 from src.processing.cleaner import process_and_save_data
 from src.processing.db_manager import load_from_sqlite
 from src.reporting.generator import generate_reports
 
-# --- IMPORT CÁC HÀM MONITORING & MODELING ---
+
 from src.monitoring.regime_detector import detect_regime
 from src.monitoring.drift_detector import detect_drift
 from src.monitoring.risk_engine import calculate_risk_report
@@ -42,19 +44,18 @@ def run_daily_pipeline(target_ticker: str = "VIC"):
         start_date,
         end_date,
     )
-    # Lấy dữ liệu raw (Không áp dụng bất kỳ heuristic scale giá nào)
-    raw_data = get_vingroup_and_context_data(start_date, end_date)
+    
+    raw_data = get_market_data(target_ticker, start_date, end_date)
     if target_ticker not in raw_data:
         logger.error("Pipeline aborted | run_id=%s | ticker=%s | reason=missing_target_data", run_id, target_ticker)
         return None
 
     logger.info("Phase started | run_id=%s | ticker=%s | phase=feature_engineering", run_id, target_ticker)
-    process_and_save_data(raw_data)
+    process_and_save_data(raw_data) # hàm này tạo features luôn
 
     logger.info("Phase started | run_id=%s | ticker=%s | phase=modeling", run_id, target_ticker)
     df_processed = load_from_sqlite(f"processed_{target_ticker}")
-    forecast_result = generate_7_day_forecast(df_processed)
-    forecast_result["ticker"] = target_ticker
+    forecast_result = generate_7_day_forecast(df_processed, target_ticker) # hàm này chạy walk-forward validation, trả về cả metrics và forecast
 
     # Tính các monitoring trước khi nhét vào agent 
     logger.info("Phase started | run_id=%s | ticker=%s | phase=monitoring", run_id, target_ticker)
@@ -87,7 +88,6 @@ def run_daily_pipeline(target_ticker: str = "VIC"):
 
     logger.info("Phase started | run_id=%s | ticker=%s | phase=reporting", run_id, target_ticker)
     
-    # Bỏ try...except để báo lỗi một cách tường minh
     report_paths = generate_reports(final_state)
 
     duration = time.perf_counter() - started

@@ -47,7 +47,6 @@ def process_and_save_data(raw_data_dict: dict):
             df_featured = df_featured.join(context_combined, how='left')
             
         # Xóa các dòng bị NaN do quá trình tính lag/rolling/merge
-        # Đối với cổ phiếu mới như VPL, việc rớt vài dòng đầu là bình thường
         initial_len = len(df_featured)
         df_featured.dropna(inplace=True)
         final_len = len(df_featured)

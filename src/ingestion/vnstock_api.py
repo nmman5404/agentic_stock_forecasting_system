@@ -60,15 +60,14 @@ def fetch_historical_data(symbols: list, start_date: str, end_date: str, data_ty
             
     return data_dict
 
-def get_vingroup_and_context_data(start_date: str, end_date: str) -> dict:
+def get_market_data(target_ticker: str, start_date: str, end_date: str) -> dict:
     """
-    Hàm tổng hợp: Kéo dữ liệu cổ phiếu Vingroup + Context (VN30, Phái sinh).
+    Kéo dữ liệu cổ phiếu mục tiêu + Context (VN30, Phái sinh).
     """
-    logger.info("Ingestion phase started | source=vnstock")
+    logger.info("Ingestion phase started | source=vnstock | target_ticker=%s", target_ticker)
     
-    # 1. Kéo cổ phiếu họ Vingroup
-    vingroup_symbols = ["VIC", "VHM", "VRE", "VPL"]
-    stock_data = fetch_historical_data(vingroup_symbols, start_date, end_date, data_type="stock")
+    # 1. Kéo đúng cổ phiếu mục tiêu
+    stock_data = fetch_historical_data([target_ticker], start_date, end_date, data_type="stock")
     
     # 2. Kéo Context: Chỉ số VN30
     vn30_data = fetch_historical_data(["VN30"], start_date, end_date, data_type="index")

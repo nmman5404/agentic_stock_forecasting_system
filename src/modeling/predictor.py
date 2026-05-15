@@ -13,13 +13,13 @@ logger = get_logger("Predictor")
 
 def generate_7_day_forecast(
     df: pd.DataFrame,
+    ticker: str, 
     model_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Generate a 7-day direct multi-step quantile forecast.
 
     Walk-forward validation is the only model-evaluation source of truth.
     """
-    ticker = df["ticker"].iloc[0] if "ticker" in df.columns and not df.empty else "Stock"
     logger.info("Forecast generation started | ticker=%s | horizon_days=7", ticker)
 
     trainer = QuantileLightGBM(model_params=model_params)
