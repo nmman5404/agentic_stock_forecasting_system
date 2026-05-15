@@ -1,82 +1,82 @@
-from __future__ import annotations
-
 import json
-from typing import Any, Dict
+from typing import Dict, Any
 
+EVALUATE_PROMPT = """Bạn là một chuyên gia Quant Researcher. Hãy đánh giá hiệu suất mô hình dự báo hiện tại.
+Dữ liệu:
+{data}
 
-CONFIG_PROPOSAL_PROMPT = """You are a quantitative forecasting assistant.
+Nhiệm vụ: Dựa vào Metrics (MAPE, Accuracy...), và trạng thái rủi ro/sai lệch (Monitoring), hãy quyết định mô hình này "OK" (đủ tốt để dùng) hay "BAD" (cần tìm tham số mới).
 
-Given monitoring context, propose one safe LightGBM Quantile configuration for a retrain attempt.
+Hãy trả về ĐÚNG định dạng JSON sau, không kèm giải thích hay markdown code block:
+{{
+    "status": "OK" hoặc "BAD",
+    "reasoning": "Lý do suy luận của bạn..."
+}}"""
 
-Rules:
-1. Return valid JSON only.
-2. Do not include markdown.
-3. Do not reveal chain-of-thought.
-4. Do not write or modify Python code.
-5. Only choose values inside the provided parameter ranges.
-6. Keep the reason concise and evidence-based.
+PROPOSE_CONFIG_PROMPT = """Bạn là một Kỹ sư Machine Learning. Mô hình dự báo hiện tại đang có hiệu suất chưa tốt.
+Dữ liệu hiện tại:
+{data}
 
-Required JSON schema:
-{
-  "learning_rate": 0.03,
-  "max_depth": 6,
-  "num_leaves": 64,
-  "min_child_samples": 25,
-  "reason": "..."
-}
-"""
+Tin tức thị trường (Đặc biệt chú ý để bắt các cú sốc/biến động đột biến):
+{news}
 
+Cấu hình hiện tại:
+{current_config}
 
-CONFIG_REPAIR_PROMPT = """The previous LightGBM configuration JSON was invalid.
+Ngưỡng cho phép:
+- learning_rate: [0.005, 0.2]
+- max_depth: [3, 12]
+- num_leaves: [16, 256]
+- min_child_samples: [5, 100]
 
-Return a corrected JSON object using only the allowed parameter ranges.
-Return valid JSON only, without markdown.
+Nhiệm vụ: Đề xuất bộ cấu hình LightGBM mới nằm trong ngưỡng cho phép để mô hình thích ứng tốt hơn với trạng thái thị trường hiện tại. 
+Trả về ĐÚNG định dạng JSON sau:
+{{
+    "learning_rate": float,
+    "max_depth": int,
+    "num_leaves": int,
+    "min_child_samples": int,
+    "reasoning": "Lý do thay đổi cấu hình dựa trên metrics và tin tức..."
+}}"""
 
-Required JSON schema:
-{
-  "learning_rate": 0.03,
-  "max_depth": 6,
-  "num_leaves": 64,
-  "min_child_samples": 25,
-  "reason": "..."
-}
-"""
+COMPARE_PROMPT = """Bạn là một Giám khảo AI. Hãy so sánh kết quả Walk-forward validation của mô hình CŨ và mô hình MỚI.
+Mô hình CŨ:
+{old_metrics}
 
+Mô hình MỚI:
+{new_metrics}
 
-def build_agent_diagnosis_prompt(
-    diagnostics: Dict[str, Any],
-    improvement_config: Dict[str, Any],
-    config_patch_policy: Dict[str, Any],
-) -> str:
-    _ = improvement_config
-    payload = {
-        "monitoring_context": diagnostics,
-        "parameter_ranges": _parameter_ranges(config_patch_policy),
-    }
-    return CONFIG_PROPOSAL_PROMPT + "\n\nContext:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+Nhiệm vụ: Mô hình MỚI có thực sự tốt hơn (dự báo chính xác hơn, tin cậy hơn) so với mô hình CŨ không?
+Trả về ĐÚNG định dạng JSON sau:
+{{
+    "is_better": true hoặc false,
+    "reasoning": "Lý do của bạn..."
+}}"""
 
+FINAL_REPORT_PROMPT = """Bạn là một Giám đốc Đầu tư (CIO) định lượng. Dựa vào CÁC DỮ LIỆU ĐƯỢC CUNG CẤP DƯỚI ĐÂY:
+Mã cổ phiếu: {ticker}
 
-def build_config_patch_repair_prompt(
-    previous_plan: Dict[str, Any],
-    validation_warnings: list[str],
-    diagnostics: Dict[str, Any],
-    config_patch_policy: Dict[str, Any],
-    base_config: Dict[str, Any],
-) -> str:
-    _ = base_config
-    payload = {
-        "previous_config": previous_plan,
-        "validation_warnings": validation_warnings,
-        "monitoring_context": diagnostics,
-        "parameter_ranges": _parameter_ranges(config_patch_policy),
-    }
-    return CONFIG_REPAIR_PROMPT + "\n\nContext:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+Dự báo 7 ngày:
+{forecast}
 
+Đánh giá rủi ro và trạng thái thị trường:
+{monitoring}
 
-def _parameter_ranges(policy: Dict[str, Any]) -> Dict[str, list[float]]:
-    allowed = policy.get("allowed_patch_keys", {}) if isinstance(policy, dict) else {}
-    ranges = {}
-    for key in ("learning_rate", "max_depth", "num_leaves", "min_child_samples"):
-        bounds = allowed.get(key, {}) if isinstance(allowed, dict) else {}
-        ranges[key] = [bounds.get("min"), bounds.get("max")]
-    return ranges
+Tin tức mới nhất trong 7 ngày qua:
+{news}
+
+QUY TẮC PHÂN TÍCH:
+1. Quyết định (BUY/SELL/HOLD/WATCH) phải có sự dung hòa giữa số liệu định lượng (Risk, Expected Return, Trend) và thông tin định tính (News).
+2. Nếu Tin tức ghi "Không có tin tức", tuyệt đối không tự bịa ra tin.
+3. Nếu rủi ro (Risk Level) là EXTREME_RISK hoặc HIGH_RISK, cân nhắc cẩn trọng chiều BUY, ưu tiên quản trị rủi ro.
+
+Nhiệm vụ: Tổng hợp tình hình và đưa ra khuyến nghị hành động nghiên cứu cuối cùng.
+Trả về ĐÚNG định dạng JSON sau:
+{{
+    "action": "BUY" | "SELL" | "HOLD" | "WATCH",
+    "summary": "Tóm tắt ngắn gọn tình hình hiện tại...",
+    "reasoning": "Luận điểm đầu tư chi tiết và logic..."
+}}"""
+
+def format_json(obj: Any) -> str:
+    return json.dumps(obj, ensure_ascii=False, indent=2)

@@ -1,17 +1,18 @@
-from __future__ import annotations
-
-from typing import Any, Dict, TypedDict
-
+from typing import TypedDict, Dict, Any
 
 class AgentState(TypedDict, total=False):
     ticker: str
-    run_id: str
-
-    workflow: Dict[str, Any]
-    champion: Dict[str, Any]
-    challenger: Dict[str, Any]
-    news: Dict[str, Any]
-    improvement: Dict[str, Any]
-    governance: Dict[str, Any]
-    recommendation: Dict[str, Any]
-    audit: Dict[str, Any]
+    
+    # Đầu vào từ các Layer trước
+    forecast_data: Dict[str, Any]
+    validation_metrics: Dict[str, Any]
+    monitoring: Dict[str, Any]  # Chứa drift, regime, risk
+    current_config: Dict[str, Any]
+    
+    # State của Agent Workflow
+    evaluation: Dict[str, Any]     # LLM đánh giá {status, reasoning}
+    news_context: str              # Kết quả tìm tin tức
+    retry_count: int               # Đếm số lần retrain (0, 1, 2...)
+    
+    # Báo cáo cuối cùng
+    final_report: Dict[str, Any]   # LLM tổng hợp {action, summary, reasoning}

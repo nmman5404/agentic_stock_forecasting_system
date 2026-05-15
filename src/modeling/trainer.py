@@ -22,8 +22,13 @@ class QuantileLightGBM:
 
     def __init__(self, target_col: str = "close", model_params: Optional[Dict[str, Any]] = None):
         self.target_col = target_col
-        self.config = model_params.copy() if model_params is not None else load_config().get("lightgbm_params", {})
-        self.quantiles = [0.025, 0.1, 0.5, 0.9, 0.975]
+        full_config = load_config()
+        self.config = model_params.copy() if model_params is not None else full_config.get("lightgbm_params", {})
+        
+        # Đọc động quantiles từ config thay vì hardcode
+        wf_config = full_config.get("walk_forward_validation", {})
+        self.quantiles = wf_config.get("quantiles", [0.025, 0.1, 0.5, 0.9, 0.975])
+        
         self.features: List[str] = []
 
     def prepare_data(self, df: pd.DataFrame, step: int = 1):

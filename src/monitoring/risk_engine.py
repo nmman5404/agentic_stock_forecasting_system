@@ -1,24 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List
 from utils.logger import get_logger
 
 logger = get_logger("RiskEngine")
 
-
-def calculate_risk_report(
-    forecast_data: Dict[str, Any],
-    validation_metrics: Optional[Dict[str, Any]] = None,
-    regime_report: Optional[Dict[str, Any]] = None,
-    drift_report: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Measure forecast risk from validated quantile forecasts.
-
-    Monitoring context is attached for downstream reasoning, but it does not
-    drive the risk label. The agent layer decides actions.
-    """
-    _ = validation_metrics
+def calculate_risk_report(forecast_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Measure forecast risk strictly from validated quantile forecasts."""
     forecasts = _validated_forecasts(forecast_data)
     current_price = _required_positive_float(forecast_data.get("current_price"), "current_price")
 
@@ -26,6 +14,7 @@ def calculate_risk_report(
     expected_price = _required_positive_float(horizon_forecast.get("q_0.5"), "q_0.5")
     lower_95 = _required_positive_float(horizon_forecast.get("q_0.025"), "q_0.025")
     upper_95 = _required_positive_float(horizon_forecast.get("q_0.975"), "q_0.975")
+    
     if lower_95 > expected_price or expected_price > upper_95:
         raise ValueError("Risk calculation requires ordered 95% forecast quantiles.")
 
@@ -38,9 +27,6 @@ def calculate_risk_report(
 
     risk_notes: List[str] = []
     risk_level = _risk_level(var_95=var_95, expected_shortfall=expected_shortfall, risk_notes=risk_notes)
-    volume_regime = None
-    if regime_report:
-        volume_regime = regime_report.get("volume_regime") or regime_report.get("liquidity_regime")
 
     report = {
         "expected_return": round(expected_return, 6),
@@ -57,16 +43,6 @@ def calculate_risk_report(
             "lower_95": lower_95,
             "upper_95": upper_95,
         },
-        "risk_context": {
-            "drift_label": drift_report.get("final_drift_label") if drift_report else None,
-            "feature_drift_level": drift_report.get("feature_drift_level") if drift_report else None,
-            "target_drift_level": drift_report.get("target_drift_level") if drift_report else None,
-            "concept_drift_level": drift_report.get("concept_drift_level") if drift_report else None,
-            "overall_drift_level": drift_report.get("overall_drift_level") if drift_report else None,
-            "volatility_regime": regime_report.get("volatility_regime") if regime_report else None,
-            "trend_regime": regime_report.get("trend_regime") if regime_report else None,
-            "volume_regime": volume_regime,
-        },
         "risk_notes": risk_notes,
     }
     logger.info(
@@ -77,7 +53,6 @@ def calculate_risk_report(
     )
     return report
 
-
 def _validated_forecasts(forecast_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(forecast_data, dict):
         raise TypeError("Risk calculation requires forecast_data as a dict.")
@@ -87,7 +62,6 @@ def _validated_forecasts(forecast_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not all(isinstance(item, dict) for item in forecasts):
         raise ValueError("Risk calculation requires forecast rows as dictionaries.")
     return forecasts
-
 
 def _risk_level(var_95: float, expected_shortfall: float, risk_notes: List[str]) -> str:
     if var_95 >= 0.20 or expected_shortfall >= 0.25:
@@ -101,7 +75,6 @@ def _risk_level(var_95: float, expected_shortfall: float, risk_notes: List[str])
         return "MEDIUM_RISK"
     risk_notes.append("Tail risk is within normal monitoring range.")
     return "LOW_RISK"
-
 
 def _required_positive_float(value: Any, field_name: str) -> float:
     if value is None:

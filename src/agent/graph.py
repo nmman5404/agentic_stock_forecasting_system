@@ -1,81 +1,67 @@
-from __future__ import annotations
-
-from langgraph.graph import END, StateGraph
-
-from src.agent.nodes import (
-    node_compare_metrics,
-    node_evaluate_candidate,
-    node_evaluate_monitoring,
-    node_generate_report,
-    node_plan_retrain,
-    node_save_or_reject_config,
-    node_search_news_context,
-    node_train_candidate,
-    node_validate_forecast,
-    node_validate_or_repair_patch,
-)
+from langgraph.graph import StateGraph, END
 from src.agent.state import AgentState
+from src.agent.nodes import (
+    node_fix_quantiles,
+    node_llm_evaluate,
+    node_search_news,
+    node_llm_retrain_compare,
+    node_generate_final_report
+)
 from utils.logger import get_logger
 
 logger = get_logger("AgentGraph")
 
+MAX_RETRIES = 2
 
-def route_after_evaluate(state: AgentState) -> str:
-    health = state.get("workflow", {}).get("model_health_status", "NEEDS_REVIEW")
-    if health == "OK":
-        logger.info("Graph routing | from=evaluate_monitoring | to=generate_report | health=OK")
-        return "node_generate_report"
-    logger.info("Graph routing | from=evaluate_monitoring | to=search_news_context | health=%s", health)
-    return "node_search_news_context"
-
-
-def route_after_patch(state: AgentState) -> str:
-    improvement = state.get("improvement", {})
-    if improvement.get("config_patch_valid") is True and improvement.get("validated_config_patch"):
-        logger.info("Graph routing | from=validate_or_repair_patch | to=train_candidate | valid=True")
-        return "node_train_candidate"
-    logger.info("Graph routing | from=validate_or_repair_patch | to=generate_report | valid=False")
-    return "node_generate_report"
-
+def route_evaluate(state: AgentState) -> str:
+    """Phân luồng sau khi LLM đánh giá hiệu suất."""
+    status = state.get("evaluation", {}).get("status", "OK")
+    retry_count = state.get("retry_count", 0)
+    
+    if status == "OK" or retry_count >= MAX_RETRIES:
+        logger.info("Routing | To: generate_final_report | status=%s | retry=%d", status, retry_count)
+        return "node_generate_final_report"
+        
+    if not state.get("news_context"):
+        logger.info("Routing | To: search_news | news=empty")
+        return "node_search_news"
+        
+    logger.info("Routing | To: llm_retrain_compare | news=exist")
+    return "node_llm_retrain_compare"
 
 def build_agent_graph():
-    logger.info("Graph build started | workflow=config_optimization_loop")
+    logger.info("Building Agent Graph (LLM-driven workflow)")
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("node_validate_forecast", node_validate_forecast)
-    workflow.add_node("node_evaluate_monitoring", node_evaluate_monitoring)
-    workflow.add_node("node_search_news_context", node_search_news_context)
-    workflow.add_node("node_plan_retrain", node_plan_retrain)
-    workflow.add_node("node_validate_or_repair_patch", node_validate_or_repair_patch)
-    workflow.add_node("node_train_candidate", node_train_candidate)
-    workflow.add_node("node_evaluate_candidate", node_evaluate_candidate)
-    workflow.add_node("node_compare_metrics", node_compare_metrics)
-    workflow.add_node("node_save_or_reject_config", node_save_or_reject_config)
-    workflow.add_node("node_generate_report", node_generate_report)
+    # Thêm các Node
+    workflow.add_node("node_fix_quantiles", node_fix_quantiles)
+    workflow.add_node("node_llm_evaluate", node_llm_evaluate)
+    workflow.add_node("node_search_news", node_search_news)
+    workflow.add_node("node_llm_retrain_compare", node_llm_retrain_compare)
+    workflow.add_node("node_generate_final_report", node_generate_final_report)
 
-    workflow.set_entry_point("node_validate_forecast")
-    workflow.add_edge("node_validate_forecast", "node_evaluate_monitoring")
+    # Định nghĩa các Edge (Đường nối)
+    workflow.set_entry_point("node_fix_quantiles")
+    
+    workflow.add_edge("node_fix_quantiles", "node_llm_evaluate")
+    
+    # Conditional Routing
     workflow.add_conditional_edges(
-        "node_evaluate_monitoring",
-        route_after_evaluate,
+        "node_llm_evaluate",
+        route_evaluate,
         {
-            "node_generate_report": "node_generate_report",
-            "node_search_news_context": "node_search_news_context",
-        },
+            "node_generate_final_report": "node_generate_final_report",
+            "node_search_news": "node_search_news",
+            "node_llm_retrain_compare": "node_llm_retrain_compare"
+        }
     )
-    workflow.add_edge("node_search_news_context", "node_plan_retrain")
-    workflow.add_edge("node_plan_retrain", "node_validate_or_repair_patch")
-    workflow.add_conditional_edges(
-        "node_validate_or_repair_patch",
-        route_after_patch,
-        {
-            "node_train_candidate": "node_train_candidate",
-            "node_generate_report": "node_generate_report",
-        },
-    )
-    workflow.add_edge("node_train_candidate", "node_evaluate_candidate")
-    workflow.add_edge("node_evaluate_candidate", "node_compare_metrics")
-    workflow.add_edge("node_compare_metrics", "node_save_or_reject_config")
-    workflow.add_edge("node_save_or_reject_config", "node_generate_report")
-    workflow.add_edge("node_generate_report", END)
+    
+    workflow.add_edge("node_search_news", "node_llm_retrain_compare")
+    
+    # Vòng lặp: Sau khi retrain và so sánh, quay lại bước fix quantiles
+    workflow.add_edge("node_llm_retrain_compare", "node_fix_quantiles")
+    
+    # Kết thúc
+    workflow.add_edge("node_generate_final_report", END)
+
     return workflow.compile()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from utils.helpers import safe_float
 
 import numpy as np
 import pandas as pd
@@ -185,9 +186,9 @@ def _concept_drift(
         drift_notes.append("Concept drift not evaluated because validation metrics are unavailable.")
         return {"level": "NONE", "detected": False, "metrics": {}}
 
-    mape = _safe_float(metrics.get("mape"))
-    directional_accuracy = _safe_float(metrics.get("directional_accuracy"))
-    interval_95_coverage = _safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage")))
+    mape = safe_float(metrics.get("mape"))
+    directional_accuracy = safe_float(metrics.get("directional_accuracy"))
+    interval_95_coverage = safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage")))
 
     metric_payload: Dict[str, Any] = {}
     levels: List[str] = []
@@ -360,12 +361,3 @@ def _max_level(levels: List[str]) -> str:
     if not levels:
         return "NONE"
     return max((str(level).upper() for level in levels), key=lambda level: LEVEL_ORDER.get(level, 0))
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None

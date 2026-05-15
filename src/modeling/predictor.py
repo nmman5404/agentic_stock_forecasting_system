@@ -43,7 +43,6 @@ def generate_7_day_forecast(
         "current_price": float(df["close"].iloc[-1]) if "close" in df.columns and not df.empty else None,
         "as_of_date": df.index[-1].strftime("%Y-%m-%d") if len(df.index) else None,
         "evaluation_method": "walk_forward",
-        "metrics": validation_metrics.get("metrics"),
         "validation_metrics": validation_metrics,
         "forecasts": forecasts,
     }
