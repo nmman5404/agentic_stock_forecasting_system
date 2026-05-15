@@ -32,210 +32,129 @@ def generate_reports(state: AgentState) -> Dict[str, str]:
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     executive_json_path = folders["json"] / f"{ticker}_executive_report_{today_str}.json"
-    technical_json_path = folders["json"] / f"{ticker}_technical_report_{today_str}.json"
-    json_path = folders["json"] / f"{ticker}_report_{today_str}.json"
+    technical_json_path = folders["json"] / f"{ticker}_technical_pipeline_report_{today_str}.json"
     md_path = folders["markdown"] / f"{ticker}_report_{today_str}.md"
     html_path = folders["html"] / f"{ticker}_report_{today_str}.html"
 
-    executive_payload = _build_executive_json_payload(state)
-    technical_payload = _build_technical_json_payload(state)
-    with executive_json_path.open("w", encoding="utf-8") as f:
-        json.dump(executive_payload, f, ensure_ascii=False, indent=4)
-    with technical_json_path.open("w", encoding="utf-8") as f:
-        json.dump(technical_payload, f, ensure_ascii=False, indent=4)
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(executive_payload, f, ensure_ascii=False, indent=4)
-    logger.info("Report saved | format=json_executive | path=%s", executive_json_path)
-    logger.info("Report saved | format=json_technical | path=%s", technical_json_path)
-    logger.info("Report saved | format=json_alias | path=%s", json_path)
-
+    _write_json(executive_json_path, _build_executive_json_payload(state))
+    _write_json(technical_json_path, _build_technical_json_payload(state))
     md_path.write_text(_build_markdown_report(state, today_str), encoding="utf-8")
-    logger.info("Report saved | format=markdown | path=%s", md_path)
-
     html_path.write_text(_build_html_report(state, today_str), encoding="utf-8")
-    logger.info("Report saved | format=html | path=%s", html_path)
 
+    logger.info("Reports saved | ticker=%s | date=%s", ticker, today_str)
     return {
-        "json": str(json_path),
-        "json_executive": str(executive_json_path),
-        "json_technical": str(technical_json_path),
+        "executive_json": str(executive_json_path),
+        "technical_pipeline_json": str(technical_json_path),
         "markdown": str(md_path),
         "html": str(html_path),
     }
 
 
-def _build_technical_json_payload(state: AgentState) -> Dict[str, Any]:
-    payload = dict(state)
-    payload["report_metadata"] = {
-        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "report_type": "technical",
-    }
-    payload["news_evidence"] = payload.get(
-        "news_evidence",
-        {
-            "news_found": payload.get("news_found", False),
-            "news_items_count": payload.get("news_items_count", 0),
-            "evidence_level": payload.get("evidence_level", "NONE"),
-        },
-    )
-    payload.setdefault("agent_assessment_summary", payload.get("final_recommendation", "N/A"))
-    payload.setdefault("signal_confidence", payload.get("risk_report", {}).get("signal_confidence", 0.0))
-    payload.setdefault(
-        "committee_assessment",
-        {
-            "assessment_summary": payload.get("assessment_summary", payload.get("agent_assessment_summary", "N/A")),
-            "interpretation": payload.get("interpretation", {}),
-            "decision_rationale": payload.get("decision_rationale", "N/A"),
-            "final_recommendation": payload.get("final_recommendation", "N/A"),
-            "evidence_used": payload.get("evidence_used", []),
-        },
-    )
-    committee = payload["committee_assessment"]
-    payload.setdefault("assessment_summary", committee.get("assessment_summary", "N/A"))
-    payload.setdefault("interpretation", committee.get("interpretation", {}))
-    payload.setdefault("decision_rationale", committee.get("decision_rationale", "N/A"))
-    payload.setdefault("final_recommendation", committee.get("final_recommendation", "N/A"))
-    payload.setdefault("evidence_used", committee.get("evidence_used", []))
-    if "forecast_data" in payload and isinstance(payload["forecast_data"], dict):
-        payload.pop("validation_metrics", None)
-    if "committee_assessment" in payload:
-        payload.pop("agent_assessment_summary", None)
-        payload.pop("assessment_summary", None)
-        payload.pop("interpretation", None)
-        payload.pop("decision_rationale", None)
-        payload.pop("final_recommendation", None)
-        payload.pop("evidence_used", None)
-    return payload
-
-
 def _build_executive_json_payload(state: AgentState) -> Dict[str, Any]:
-    forecast_data = state.get("forecast_data", {})
-    holdout = forecast_data.get("metrics", {}) if isinstance(forecast_data, dict) else {}
-    validation_report = (
-        forecast_data.get("validation_metrics", state.get("validation_metrics", {}))
-        if isinstance(forecast_data, dict)
-        else state.get("validation_metrics", {})
-    )
-    validation = _validation_metrics(validation_report)
-    regime = state.get("regime_report", {})
-    drift = state.get("drift_report", {})
-    risk = state.get("risk_report", {})
-    committee = _committee_data(state)
-    forecasts = forecast_data.get("forecasts", []) if isinstance(forecast_data, dict) else []
-    drifted_features = drift.get("drifted_features", []) if isinstance(drift, dict) else []
-    top_drifted_features = [
-        item.get("feature")
-        for item in drifted_features[:5]
-        if isinstance(item, dict) and item.get("feature")
-    ]
+    final_model = _final_model_name(state)
+    candidate = _candidate(state, final_model)
+    forecast = _as_dict(candidate.get("forecast_data"))
+    validation = _as_dict(candidate.get("validation_metrics"))
+    recommendation = _as_dict(state.get("recommendation"))
     generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
     return {
         "metadata": {
             "ticker": state.get("ticker", "UNKNOWN"),
             "run_id": state.get("run_id", "N/A"),
-            "as_of_date": forecast_data.get("as_of_date", "N/A") if isinstance(forecast_data, dict) else "N/A",
+            "as_of_date": forecast.get("as_of_date", "N/A"),
             "generated_at": generated_at,
             "report_type": "executive",
+            "final_model": final_model,
         },
-        "summary": {
-            "model_status": state.get("evaluation_status", "N/A"),
-            "final_signal": state.get("trading_signal", risk.get("preliminary_signal", "HOLD")),
-            "signal_confidence": state.get("signal_confidence", risk.get("signal_confidence", 0.0)),
-            "risk_level": risk.get("risk_level", "N/A"),
-            "drift_severity": drift.get("severity", "N/A"),
-            "news_evidence": state.get("evidence_level", "NONE"),
+        "ticker": state.get("ticker", "UNKNOWN"),
+        "run_id": state.get("run_id", "N/A"),
+        "as_of_date": forecast.get("as_of_date", "N/A"),
+        "forecast_values": _forecast_values(forecast, state),
+        "basic_model_metrics": _basic_model_metrics(validation),
+        "walk_forward_summary": _walk_forward_summary(validation),
+        "risk_summary": _risk_summary(_as_dict(candidate.get("risk_report"))),
+        "regime_summary": _regime_summary(_as_dict(candidate.get("regime_report"))),
+        "drift_summary": _drift_summary(_as_dict(candidate.get("drift_report"))),
+        "news_summary": _news_summary(_as_dict(state.get("news"))),
+        "improvement": _improvement_summary(state),
+        "final_research_signal": {
+            "signal": recommendation.get("final_action", "MANUAL_REVIEW"),
+            "confidence": recommendation.get("confidence", 0.0),
         },
-        "forecast": {
-            "current_price": forecast_data.get("current_price") if isinstance(forecast_data, dict) else None,
-            "horizon_days": len(forecasts),
-            "forecasts": forecasts,
+        "committee_assessment_summary": {
+            "assessment_summary": recommendation.get("assessment_summary", "N/A"),
+            "decision_rationale": recommendation.get("decision_rationale", "N/A"),
+            "final_recommendation": recommendation.get("final_report", "N/A"),
         },
-        "model_metrics": {
-            "holdout": {
-                "MAE": holdout.get("MAE", holdout.get("mae")),
-                "RMSE": holdout.get("RMSE", holdout.get("rmse")),
-                "MAPE": holdout.get("MAPE", holdout.get("mape")),
-            },
-            "walk_forward": {
-                "MAE": validation.get("mae"),
-                "RMSE": validation.get("rmse"),
-                "MAPE": validation.get("mape"),
-                "SMAPE": validation.get("smape"),
-                "directional_accuracy": validation.get("directional_accuracy"),
-                "interval_80_coverage": validation.get("interval_80_coverage"),
-                "interval_95_coverage": validation.get("interval_95_coverage"),
-                "pinball_loss": validation.get("pinball_loss"),
-                "prediction_bias": validation.get("prediction_bias"),
-            },
+    }
+
+
+def _build_technical_json_payload(state: AgentState) -> Dict[str, Any]:
+    final_model = _final_model_name(state)
+    generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return {
+        "metadata": {
+            "ticker": state.get("ticker", "UNKNOWN"),
+            "run_id": state.get("run_id", "N/A"),
+            "generated_at": generated_at,
+            "report_type": "technical_pipeline",
+            "final_model": final_model,
         },
-        "monitoring": {
-            "regime": {
-                "volatility_regime": regime.get("volatility_regime", "N/A"),
-                "trend_regime": regime.get("trend_regime", "N/A"),
-                "liquidity_regime": regime.get("liquidity_regime", "N/A"),
-                "regime_confidence": regime.get("regime_confidence"),
-            },
-            "drift": {
-                "feature_drift_detected": drift.get("feature_drift_detected"),
-                "target_drift_detected": drift.get("target_drift_detected"),
-                "concept_drift_detected": drift.get("concept_drift_detected"),
-                "severity": drift.get("severity", "N/A"),
-                "recommended_action": drift.get("recommended_action", "N/A"),
-                "top_drifted_features": top_drifted_features,
-            },
-        },
-        "risk": {
-            "expected_return_7d": risk.get("expected_return_7d"),
-            "downside_risk_95": risk.get("downside_risk_95"),
-            "upside_potential_95": risk.get("upside_potential_95"),
-            "risk_reward_ratio": risk.get("risk_reward_ratio"),
-            "var_95": risk.get("var_95"),
-            "expected_shortfall": risk.get("expected_shortfall"),
-            "risk_level": risk.get("risk_level", "N/A"),
-            "signal_confidence": risk.get("signal_confidence", state.get("signal_confidence", 0.0)),
-        },
-        "agent": {
-            "assessment_summary": committee.get("assessment_summary", "N/A"),
-            "decision_rationale": committee.get("decision_rationale", "N/A"),
-            "final_recommendation": committee.get("final_recommendation", "N/A"),
-            "evidence_used": committee.get("evidence_used", []),
-        },
-        "audit_summary": {
-            "retrain_attempts": state.get("retry_count", 0),
-            "quantiles_fixed": state.get("quantiles_fixed", False),
-            "audit_event_count": len(state.get("audit_trail", [])),
+        "workflow": state.get("workflow", {}),
+        "champion": _candidate_payload(_as_dict(state.get("champion"))),
+        "challenger": _candidate_payload(_as_dict(state.get("challenger"))),
+        "news": state.get("news", {}),
+        "improvement": state.get("improvement", {}),
+        "governance": state.get("governance", {}),
+        "recommendation": state.get("recommendation", {}),
+        "config_patch_validation_result": _config_patch_validation_result(state),
+        "audit_trail": _as_dict(state.get("audit")).get("trail", []),
+        "errors_warnings": {
+            "errors": _as_dict(state.get("audit")).get("errors", []),
+            "news_errors": _as_dict(state.get("news")).get("errors", []),
+            "config_patch_warnings": _as_dict(state.get("improvement")).get("config_patch_warnings", []),
         },
     }
 
 
 def _build_markdown_report(state: AgentState, today_str: str) -> str:
     ticker = state.get("ticker", "UNKNOWN")
-    forecast_data = state.get("forecast_data", {})
-    holdout = forecast_data.get("metrics", {})
-    validation = _validation_metrics(forecast_data.get("validation_metrics", state.get("validation_metrics", {})))
-    regime = state.get("regime_report", {})
-    drift = state.get("drift_report", {})
-    risk = state.get("risk_report", {})
-    governance = state.get("governance_decision", {})
-    news_evidence = state.get("news_evidence", {})
+    final_model = _final_model_name(state)
+    candidate = _candidate(state, final_model)
+    validation = _validation_metrics(_as_dict(candidate.get("validation_metrics")))
+    regime = _as_dict(candidate.get("regime_report"))
+    drift = _as_dict(candidate.get("drift_report"))
+    risk = _as_dict(candidate.get("risk_report"))
+    news = _as_dict(state.get("news"))
+    recommendation = _as_dict(state.get("recommendation"))
+    diagnostics = _as_dict(candidate.get("diagnostics"))
+    statuses = _as_dict(diagnostics.get("statuses"))
 
-    return f"""# Quant Risk Committee Report: {ticker} ({today_str})
+    return f"""# Quant Research Report: {ticker} ({today_str})
 
-## 1. Executive Summary
-- Model status: **{state.get('evaluation_status', 'N/A')}**
-- Final research signal: **{state.get('trading_signal', risk.get('preliminary_signal', 'HOLD'))}**
-- Signal confidence: **{_pct_or_number(state.get('signal_confidence', risk.get('signal_confidence', 0.0)))}**
+## Executive Summary
+- Final model: **{final_model}**
+- Final research action: **{recommendation.get('final_action', 'MANUAL_REVIEW')}**
+- Confidence: **{_number(recommendation.get('confidence'))}**
+- Accuracy check: **{statuses.get('accuracy_check_status', 'UNKNOWN')}**
+- Walk-forward reliability: **{statuses.get('walk_forward_reliability_status', 'UNKNOWN')}**
+- Risk clearance: **{statuses.get('risk_clearance_status', 'WATCH')}**
+- Overall trust status: **{statuses.get('overall_trust_status', 'REQUIRES_MANUAL_REVIEW')}**
 - Risk level: **{risk.get('risk_level', 'N/A')}**
-- News evidence: **{news_evidence.get('evidence_level', state.get('evidence_level', 'NONE'))}**
+- Drift severity: **{drift.get('severity', 'N/A')}**
+- News status: **{news.get('status', 'NO_NEWS')}**
 
-## 2. Forecast Performance
-- Holdout MAE: {_number(holdout.get('MAE'))}
-- Holdout RMSE: {_number(holdout.get('RMSE'))}
-- Holdout MAPE: {_pct(holdout.get('MAPE'))}
-- Evaluation reason: {state.get('evaluation_reason', 'N/A')}
+## Forecast
+- Current price: {_number(_as_dict(candidate.get('forecast_data')).get('current_price'))}
+- Expected return: {_pct(risk.get('expected_return'))}
+- Downside risk 95%: {_pct(risk.get('downside_risk_95'))}
+- Upside potential 95%: {_pct(risk.get('upside_potential_95'))}
+- Risk/reward ratio: {_number(risk.get('risk_reward_ratio'))}
 
-## 3. Walk-forward Validation
+## Walk-forward Validation
+- Evaluation method: **walk_forward**
+- Fold count: **{_as_dict(candidate.get('validation_metrics')).get('fold_count', 'N/A')}**
 - MAE: {_number(validation.get('mae'))}
 - RMSE: {_number(validation.get('rmse'))}
 - MAPE: {_pct(validation.get('mape'))}
@@ -243,74 +162,66 @@ def _build_markdown_report(state: AgentState, today_str: str) -> str:
 - Directional accuracy: {_pct(validation.get('directional_accuracy'))}
 - 95% interval coverage: {_pct(validation.get('interval_95_coverage'))}
 - Pinball loss: {_number(validation.get('pinball_loss'))}
-- Prediction bias: {_number(validation.get('prediction_bias'))}
 
-## 4. Market Regime
+## Monitoring
+- Regime label: **{regime.get('final_regime_label', 'N/A')}**
 - Volatility regime: **{regime.get('volatility_regime', 'N/A')}**
 - Trend regime: **{regime.get('trend_regime', 'N/A')}**
-- Liquidity regime: **{regime.get('liquidity_regime', 'N/A')}**
-- Confidence: {_pct_or_number(regime.get('regime_confidence'))}
-- Notes: {_join_notes(regime.get('regime_notes', []))}
+- Volume regime: **{regime.get('volume_regime', 'N/A')}**
+- Drift feature/target/concept scores: **{drift.get('feature_score', 0)} / {drift.get('target_score', 0)} / {drift.get('concept_score', 0)}**
+- Drift recommended action: **{drift.get('recommended_action', 'N/A')}**
 
-## 5. Drift Detection
-- Feature drift detected: **{drift.get('feature_drift_detected', False)}**
-- Target drift detected: **{drift.get('target_drift_detected', False)}**
-- Concept drift detected: **{drift.get('concept_drift_detected', False)}**
-- Severity: **{drift.get('severity', 'N/A')}**
-- Recommended action: **{drift.get('recommended_action', 'N/A')}**
-- Notes: {_join_notes(drift.get('drift_notes', []))}
+## Agent Improvement Plan
+{_improvement_markdown(state)}
 
-## 6. Risk Assessment
-- Expected return 7d: {_pct(risk.get('expected_return_7d'))}
-- Downside risk 95%: {_pct(risk.get('downside_risk_95'))}
-- Upside potential 95%: {_pct(risk.get('upside_potential_95'))}
-- Risk/reward ratio: {_number(risk.get('risk_reward_ratio'))}
-- VaR 95%: {_pct(risk.get('var_95'))}
-- Expected shortfall: {_pct(risk.get('expected_shortfall'))}
-- Preliminary signal: **{risk.get('preliminary_signal', 'N/A')}**
-- Risk notes: {_join_notes(risk.get('risk_notes', []))}
-
-## 7. News & Event Context
-- News found: **{state.get('news_found', False)}**
-- News items count: **{state.get('news_items_count', 0)}**
-- Evidence level: **{state.get('evidence_level', 'NONE')}**
-- Shock classification: **{state.get('shock_type', 'NO_NEWS')}**
+## News Context
+- Google News used: **{news.get('google_news_used', False)}**
+- Evidence level: **{news.get('evidence_level', 'NONE')}**
+- Shock type: **{news.get('shock_type', 'NO_NEWS')}**
+- Raw/matched items: **{news.get('raw_news_items_count', 0)} / {news.get('matched_news_items_count', 0)}**
+- Debug path: `{news.get('debug_path', 'N/A')}`
 
 ```text
-{state.get('news_context', 'NO_NEWS')}
+{news.get('context', 'NO_NEWS')}
 ```
 
-## 8. Model Governance Decision
-- Decision: **{governance.get('decision', 'N/A')}**
-- Accepted challenger: **{governance.get('accepted', False)}**
-- Reason: {governance.get('reason', state.get('action_taken', 'N/A'))}
-- Action taken: {state.get('action_taken', 'N/A')}
+## Governance
+- Decision: **{_as_dict(state.get('governance')).get('decision', 'NOT_REQUIRED')}**
+- Final model: **{_as_dict(state.get('governance')).get('final_model', final_model)}**
+- Accepted challenger: **{_as_dict(state.get('governance')).get('accepted_challenger', False)}**
+- Reason: {_as_dict(state.get('governance')).get('reason', 'N/A')}
 
-## 9. Committee Assessment
-{_committee_markdown(state)}
+## Final Recommendation
+{recommendation.get('final_report', 'Research output only; not financial advice.')}
 
-## 10. Audit Trail
-{_audit_markdown(state.get('audit_trail', []))}
+## Audit Trail
+{_audit_markdown(_as_dict(state.get('audit')).get('trail', []))}
 """
 
 
 def _build_html_report(state: AgentState, today_str: str) -> str:
     ticker = state.get("ticker", "UNKNOWN")
-    forecasts = state.get("forecast_data", {}).get("forecasts", [])
+    final_model = _final_model_name(state)
+    candidate = _candidate(state, final_model)
+    forecasts = _as_dict(candidate.get("forecast_data")).get("forecasts", [])
+    risk = _as_dict(candidate.get("risk_report"))
+    drift = _as_dict(candidate.get("drift_report"))
+    regime = _as_dict(candidate.get("regime_report"))
+    news = _as_dict(state.get("news"))
+    recommendation = _as_dict(state.get("recommendation"))
+    action = recommendation.get("final_action", "MANUAL_REVIEW")
+    color, bg = _signal_colors(action)
     chart_div = _forecast_chart(ticker, forecasts)
-    risk = state.get("risk_report", {})
-    signal = state.get("trading_signal", risk.get("preliminary_signal", "HOLD"))
-    color, bg = _signal_colors(signal)
-    committee_html = _committee_html(state)
+
     audit_items = "".join(
-        f"<li><b>{html.escape(item.get('phase', 'N/A'))}</b>: {html.escape(item.get('status', 'N/A'))} - {html.escape(item.get('message', ''))}</li>"
-        for item in state.get("audit_trail", [])
+        f"<li><b>{html.escape(item.get('phase', 'N/A'))}</b>: {html.escape(item.get('node_execution_status', 'N/A'))} - {html.escape(item.get('message', ''))}</li>"
+        for item in _as_dict(state.get("audit")).get("trail", [])
     )
 
     return f"""
     <html>
         <head>
-            <title>Quant Risk Report {html.escape(ticker)}</title>
+            <title>Quant Research Report {html.escape(ticker)}</title>
             <meta charset="utf-8">
             <style>
                 body {{ font-family: 'Segoe UI', Tahoma, sans-serif; padding: 20px; background-color: #f8f9fa; color: #1f2933; }}
@@ -320,22 +231,23 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
                 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0; }}
                 .panel {{ border: 1px solid #d9e2ec; border-radius: 8px; padding: 14px; background: #ffffff; }}
                 .panel h3 {{ margin-top: 0; font-size: 15px; color: #334e68; }}
-                .committee {{ background-color: #eef5ff; border-left: 4px solid #2f80ed; padding: 14px; margin: 18px 0; }}
+                .section {{ background-color: #eef5ff; border-left: 4px solid #2f80ed; padding: 14px; margin: 18px 0; }}
                 .audit {{ background-color: #1f2933; color: #edf2f7; padding: 14px; border-radius: 6px; margin-top: 18px; }}
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>Quant Risk Committee Report: {html.escape(ticker)}</h1>
-                <p><b>Report date:</b> {html.escape(today_str)}</p>
-                <div class="signal"><span>Final research signal: {html.escape(signal)}</span></div>
+                <h1>Quant Research Report: {html.escape(ticker)}</h1>
+                <p><b>Report date:</b> {html.escape(today_str)} | <b>Final model:</b> {html.escape(final_model)}</p>
+                <div class="signal"><span>Final research action: {html.escape(action)}</span></div>
                 <div class="grid">
-                    <div class="panel"><h3>Risk</h3><p>Level: <b>{risk.get('risk_level', 'N/A')}</b><br>Confidence: {_pct_or_number(state.get('signal_confidence', risk.get('signal_confidence')))}</p></div>
-                    <div class="panel"><h3>Regime</h3><p>{state.get('regime_report', {}).get('volatility_regime', 'N/A')} | {state.get('regime_report', {}).get('trend_regime', 'N/A')}</p></div>
-                    <div class="panel"><h3>Drift</h3><p>Severity: <b>{state.get('drift_report', {}).get('severity', 'N/A')}</b></p></div>
-                    <div class="panel"><h3>News</h3><p>Evidence: <b>{state.get('evidence_level', 'NONE')}</b><br>Shock: {state.get('shock_type', 'NO_NEWS')}</p></div>
+                    <div class="panel"><h3>Risk</h3><p>Level: <b>{risk.get('risk_level', 'N/A')}</b><br>Expected return: {_pct(risk.get('expected_return'))}</p></div>
+                    <div class="panel"><h3>Regime</h3><p>{regime.get('final_regime_label', 'N/A')}</p></div>
+                    <div class="panel"><h3>Drift</h3><p>Severity: <b>{drift.get('severity', 'N/A')}</b><br>Total score: {drift.get('total_score', 0)}</p></div>
+                    <div class="panel"><h3>News</h3><p>Status: <b>{news.get('status', 'NO_NEWS')}</b><br>Raw/matched: {news.get('raw_news_items_count', 0)} / {news.get('matched_news_items_count', 0)}</p></div>
                 </div>
-                <div class="committee"><h3>Committee Assessment</h3>{committee_html}</div>
+                <div class="section"><h3>Assessment</h3><p>{html.escape(str(recommendation.get('assessment_summary', 'N/A')))}</p><p>{html.escape(str(recommendation.get('decision_rationale', 'N/A')))}</p></div>
+                <div class="section"><h3>Agent Improvement Plan</h3>{_improvement_html(state)}</div>
                 {chart_div}
                 <div class="audit">
                     <details>
@@ -349,102 +261,177 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
     """
 
 
-def _committee_data(state: AgentState) -> Dict[str, Any]:
-    committee = state.get("committee_assessment", {})
-    if not isinstance(committee, dict):
-        committee = {}
+def _forecast_values(forecast: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
+    workflow = _as_dict(state.get("workflow"))
     return {
-        "assessment_summary": committee.get(
-            "assessment_summary",
-            state.get("assessment_summary", state.get("agent_assessment_summary", "N/A")),
-        ),
-        "interpretation": committee.get("interpretation", state.get("interpretation", {})),
-        "decision_rationale": committee.get(
-            "decision_rationale",
-            state.get("decision_rationale", "N/A"),
-        ),
-        "final_recommendation": committee.get(
-            "final_recommendation",
-            state.get("final_recommendation", "N/A"),
-        ),
-        "evidence_used": committee.get("evidence_used", state.get("evidence_used", [])),
+        "current_price": forecast.get("current_price"),
+        "as_of_date": forecast.get("as_of_date"),
+        "price_unit_detected": workflow.get("price_unit_detected", "unknown"),
+        "price_scale_note": workflow.get("price_scale_note", "N/A"),
+        "horizon_days": len(forecast.get("forecasts", [])),
+        "forecasts": forecast.get("forecasts", []),
     }
 
 
-def _committee_markdown(state: AgentState) -> str:
-    committee = _committee_data(state)
-    interpretation = committee.get("interpretation", {})
-    if isinstance(interpretation, dict):
-        interpretation_md = "\n".join(
-            f"- {label}: {interpretation.get(key, 'not available')}"
-            for key, label in [
-                ("forecast_performance", "Forecast performance"),
-                ("validation_reliability", "Validation reliability"),
-                ("risk_profile", "Risk profile"),
-                ("market_regime", "Market regime"),
-                ("drift_condition", "Drift condition"),
-                ("news_context_evidence", "News/context evidence"),
-                ("governance_retrain_status", "Governance/retrain status"),
-            ]
-        )
-    else:
-        interpretation_md = f"- {interpretation or 'N/A'}"
+def _walk_forward_summary(validation: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = _validation_metrics(validation)
+    return {
+        "evaluation_method": validation.get("evaluation_method", "walk_forward"),
+        "status": validation.get("status"),
+        "fold_count": validation.get("fold_count"),
+        "sample_count": validation.get("sample_count"),
+        "feature_count": validation.get("feature_count"),
+        "mae": metrics.get("mae"),
+        "rmse": metrics.get("rmse"),
+        "mape": metrics.get("mape"),
+        "smape": metrics.get("smape"),
+        "directional_accuracy": metrics.get("directional_accuracy"),
+        "interval_80_coverage": metrics.get("interval_80_coverage"),
+        "interval_95_coverage": metrics.get("interval_95_coverage", metrics.get("interval_coverage")),
+        "pinball_loss": metrics.get("pinball_loss"),
+        "prediction_bias": metrics.get("prediction_bias"),
+        "prediction_bias_pct": metrics.get("prediction_bias_pct"),
+        "quantile_crossing_rate": metrics.get("quantile_crossing_rate"),
+    }
 
-    evidence = committee.get("evidence_used", [])
-    evidence_text = ", ".join(str(item) for item in evidence) if evidence else "N/A"
-    return (
-        f"### Assessment\n{committee.get('assessment_summary', 'N/A')}\n\n"
-        f"### Interpretation\n{interpretation_md}\n\n"
-        f"### Decision Rationale\n{committee.get('decision_rationale', 'N/A')}\n\n"
-        f"### Final Recommendation\n{committee.get('final_recommendation', 'N/A')}\n\n"
-        f"### Evidence Used\n{evidence_text}"
+
+def _basic_model_metrics(validation: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = _validation_metrics(validation)
+    return {
+        "evaluation_method": validation.get("evaluation_method", "walk_forward"),
+        "mape": metrics.get("mape"),
+        "rmse": metrics.get("rmse"),
+        "mae": metrics.get("mae"),
+        "directional_accuracy": metrics.get("directional_accuracy"),
+        "interval_95_coverage": metrics.get("interval_95_coverage", metrics.get("interval_coverage")),
+    }
+
+
+def _risk_summary(risk: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "expected_return": risk.get("expected_return"),
+        "expected_return_7d": risk.get("expected_return_7d"),
+        "downside_risk_95": risk.get("downside_risk_95"),
+        "upside_potential_95": risk.get("upside_potential_95"),
+        "risk_reward_ratio": risk.get("risk_reward_ratio"),
+        "var_95": risk.get("var_95"),
+        "expected_shortfall": risk.get("expected_shortfall"),
+        "risk_level": risk.get("risk_level"),
+        "risk_notes": risk.get("risk_notes", []),
+    }
+
+
+def _regime_summary(regime: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "volatility_regime": regime.get("volatility_regime"),
+        "trend_regime": regime.get("trend_regime"),
+        "volume_regime": regime.get("volume_regime"),
+        "final_regime_label": regime.get("final_regime_label"),
+        "regime_confidence": regime.get("regime_confidence"),
+        "warnings": regime.get("warnings", []),
+        "regime_notes": regime.get("regime_notes", []),
+    }
+
+
+def _drift_summary(drift: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "feature_drift_detected": drift.get("feature_drift_detected"),
+        "target_drift_detected": drift.get("target_drift_detected"),
+        "concept_drift_detected": drift.get("concept_drift_detected"),
+        "feature_score": drift.get("feature_score"),
+        "target_score": drift.get("target_score"),
+        "concept_score": drift.get("concept_score"),
+        "total_score": drift.get("total_score"),
+        "severity": drift.get("severity"),
+        "recommended_action": drift.get("recommended_action"),
+        "top_drifted_features": [
+            item.get("feature")
+            for item in drift.get("drifted_features", [])[:5]
+            if isinstance(item, dict) and item.get("feature")
+        ],
+        "drift_notes": drift.get("drift_notes", []),
+    }
+
+
+def _news_summary(news: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "status": news.get("status", "NO_NEWS"),
+        "found": news.get("found", False),
+        "items_count": news.get("items_count", 0),
+        "raw_news_items_count": news.get("raw_news_items_count", 0),
+        "matched_news_items_count": news.get("matched_news_items_count", 0),
+        "evidence_level": news.get("evidence_level", "NONE"),
+        "shock_type": news.get("shock_type", "NO_NEWS"),
+        "debug_path": news.get("debug_path"),
+        "queries": news.get("queries", []),
+        "google_news_used": news.get("google_news_used", False),
+    }
+
+
+def _improvement_summary(state: AgentState) -> Dict[str, Any]:
+    improvement = _as_dict(state.get("improvement"))
+    governance = _as_dict(state.get("governance"))
+    return {
+        "agent_decision": improvement.get("decision"),
+        "technical_retrain_required": improvement.get("technical_retrain_required", False),
+        "technical_retrain_reasons": improvement.get("technical_retrain_reasons", []),
+        "technical_retrain_strategy": improvement.get("technical_retrain_strategy"),
+        "retrain_attempted": _as_dict(state.get("workflow")).get("retrain_attempted", False),
+        "config_patch_source": improvement.get("config_patch_source"),
+        "config_patch_validation_status": improvement.get("config_patch_validation_status"),
+        "governance_decision": governance.get("decision"),
+        "final_model": governance.get("final_model", _final_model_name(state)),
+    }
+
+
+def _config_patch_validation_result(state: AgentState) -> Dict[str, Any]:
+    improvement = _as_dict(state.get("improvement"))
+    return {
+        "config_patch_valid": improvement.get("config_patch_valid"),
+        "config_patch_validation_status": improvement.get("config_patch_validation_status", "NOT_REQUIRED"),
+        "config_patch_source": improvement.get("config_patch_source", "NOT_REQUIRED"),
+        "config_patch_warnings": improvement.get("config_patch_warnings", []),
+        "validated_config_patch": improvement.get("validated_config_patch", {}),
+        "repair_attempts": improvement.get("repair_attempts", 0),
+        "repair_history": improvement.get("repair_history", []),
+    }
+
+
+def _improvement_markdown(state: AgentState) -> str:
+    improvement = _as_dict(state.get("improvement"))
+    governance = _as_dict(state.get("governance"))
+    workflow = _as_dict(state.get("workflow"))
+    return "\n".join(
+        [
+            f"- Agent diagnosis: **{improvement.get('diagnosis', 'N/A')}**",
+            f"- Agent decision: **{improvement.get('decision', 'N/A')}**",
+            f"- Technical retrain required: **{improvement.get('technical_retrain_required', False)}**",
+            f"- Technical retrain reasons: {_join_notes(improvement.get('technical_retrain_reasons', []))}",
+            f"- Technical retrain strategy: **{improvement.get('technical_retrain_strategy', 'NO_ACTION')}**",
+            f"- Config patch source: **{improvement.get('config_patch_source', 'NOT_REQUIRED')}**",
+            f"- Config patch validation: **{improvement.get('config_patch_validation_status', 'NOT_REQUIRED')}**",
+            f"- Retrain attempted: **{workflow.get('retrain_attempted', False)}**",
+            f"- Governance decision: **{governance.get('decision', 'NOT_REQUIRED')}**",
+            f"- Final model: **{governance.get('final_model', _final_model_name(state))}**",
+            f"- Reason: {governance.get('reason', improvement.get('reason', 'N/A'))}",
+        ]
     )
 
 
-def _committee_html(state: AgentState) -> str:
-    committee = _committee_data(state)
-    interpretation = committee.get("interpretation", {})
-    if isinstance(interpretation, dict):
-        items = "".join(
-            f"<li><b>{html.escape(label)}:</b> {html.escape(str(interpretation.get(key, 'not available')))}</li>"
-            for key, label in [
-                ("forecast_performance", "Forecast performance"),
-                ("validation_reliability", "Validation reliability"),
-                ("risk_profile", "Risk profile"),
-                ("market_regime", "Market regime"),
-                ("drift_condition", "Drift condition"),
-                ("news_context_evidence", "News/context evidence"),
-                ("governance_retrain_status", "Governance/retrain status"),
-            ]
-        )
-    else:
-        items = f"<li>{html.escape(str(interpretation or 'N/A'))}</li>"
-    evidence = committee.get("evidence_used", [])
-    evidence_text = ", ".join(str(item) for item in evidence) if evidence else "N/A"
-    return (
-        f"<h4>Assessment</h4><p>{html.escape(str(committee.get('assessment_summary', 'N/A')))}</p>"
-        f"<h4>Interpretation</h4><ul>{items}</ul>"
-        f"<h4>Decision Rationale</h4><p>{html.escape(str(committee.get('decision_rationale', 'N/A')))}</p>"
-        f"<h4>Final Recommendation</h4><p>{html.escape(str(committee.get('final_recommendation', 'N/A')))}</p>"
-        f"<h4>Evidence Used</h4><p>{html.escape(evidence_text)}</p>"
-    )
+def _improvement_html(state: AgentState) -> str:
+    lines = _improvement_markdown(state).splitlines()
+    return "<ul>" + "".join(f"<li>{html.escape(line.lstrip('- '))}</li>" for line in lines) + "</ul>"
 
 
 def _forecast_chart(ticker: str, forecasts: list) -> str:
     if not forecasts:
         return "<p>No forecast data available.</p>"
-    steps = [f"T+{f['step']}" for f in forecasts]
-    q50 = [f["q_0.5"] for f in forecasts]
-    q10 = [f["q_0.1"] for f in forecasts]
-    q90 = [f["q_0.9"] for f in forecasts]
-    q025 = [f["q_0.025"] for f in forecasts]
-    q975 = [f["q_0.975"] for f in forecasts]
-
+    steps = [f"T+{item.get('step')}" for item in forecasts]
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
             x=steps + steps[::-1],
-            y=q975 + q025[::-1],
+            y=[item.get("q_0.975") for item in forecasts] + [item.get("q_0.025") for item in forecasts][::-1],
             fill="toself",
             fillcolor="rgba(47, 128, 237, 0.14)",
             line=dict(color="rgba(255,255,255,0)"),
@@ -454,21 +441,36 @@ def _forecast_chart(ticker: str, forecasts: list) -> str:
     fig.add_trace(
         go.Scatter(
             x=steps + steps[::-1],
-            y=q90 + q10[::-1],
+            y=[item.get("q_0.9") for item in forecasts] + [item.get("q_0.1") for item in forecasts][::-1],
             fill="toself",
             fillcolor="rgba(47, 128, 237, 0.25)",
             line=dict(color="rgba(255,255,255,0)"),
             name="80% interval",
         )
     )
-    fig.add_trace(go.Scatter(x=steps, y=q50, mode="lines+markers", name="Median forecast"))
-    fig.update_layout(
-        title=f"7-day quantile forecast for {ticker}",
-        xaxis_title="Horizon",
-        yaxis_title="Price",
-        template="plotly_white",
-    )
+    fig.add_trace(go.Scatter(x=steps, y=[item.get("q_0.5") for item in forecasts], mode="lines+markers", name="Median forecast"))
+    fig.update_layout(title=f"7-day quantile forecast for {ticker}", xaxis_title="Horizon", yaxis_title="Price", template="plotly_white")
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
+
+
+def _final_model_name(state: AgentState) -> str:
+    governance = _as_dict(state.get("governance"))
+    workflow = _as_dict(state.get("workflow"))
+    final_model = governance.get("final_model") or workflow.get("active_candidate") or "champion"
+    return final_model if final_model in {"champion", "challenger"} else "champion"
+
+
+def _candidate(state: AgentState, name: str) -> Dict[str, Any]:
+    return _as_dict(state.get(name))
+
+
+def _candidate_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(candidate)
+    forecast = dict(_as_dict(payload.get("forecast_data")))
+    forecast.pop("validation_metrics", None)
+    forecast.pop("metrics", None)
+    payload["forecast_data"] = forecast
+    return payload
 
 
 def _validation_metrics(validation_report: Dict[str, Any]) -> Dict[str, Any]:
@@ -493,7 +495,7 @@ def _audit_markdown(audit_trail: list) -> str:
         return "- No audit entries available."
     return "\n".join(
         f"- `{item.get('timestamp', 'N/A')}` | {item.get('phase', 'N/A')} | "
-        f"**{item.get('status', 'N/A')}** | {item.get('message', '')}"
+        f"**{item.get('node_execution_status', 'N/A')}** | {item.get('message', '')}"
         for item in audit_trail
     )
 
@@ -516,9 +518,17 @@ def _pct(value: Any) -> str:
         return "N/A"
 
 
-def _pct_or_number(value: Any) -> str:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return "N/A"
-    return f"{number:.2f}"
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=4, default=_json_default)
+    logger.info("Report saved | format=json | path=%s", path)
+
+
+def _json_default(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)

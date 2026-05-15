@@ -1,0 +1,4 @@
+price:
+  unit: "auto"
+  normalize_to: "raw"
+  warn_if_price_below: 1000

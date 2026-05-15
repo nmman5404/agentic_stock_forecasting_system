@@ -1,40 +1,777 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import pandas as pd
 import yaml
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from src.agent.config_patch_validator import validate_config_patch
+from src.agent.diagnostics import build_model_diagnostics
+from src.agent.governance import compare_model_candidates
+from src.agent.improvement_policy import assess_retrain_need
+from src.agent.prompts import build_agent_diagnosis_prompt, build_config_patch_repair_prompt
 from src.agent.state import AgentState
-from src.agent.tools import tool_adjust_model_hyperparams, tool_search_vietstock_news
+from src.agent.tools import tool_search_google_news
 from src.modeling.predictor import generate_7_day_forecast
+from src.monitoring.drift_detector import detect_drift
+from src.monitoring.regime_detector import detect_regime
 from src.processing.db_manager import load_from_sqlite
 from src.risk.risk_engine import calculate_risk_report
 from utils.logger import get_logger
 
 logger = get_logger("AgentNodes")
+AGENT_DEBUG_DIR = Path("data/agent_debug")
 
 _LLM: Optional[ChatGoogleGenerativeAI] = None
 
-ALLOWED_SHOCK_TYPES = {
-    "NO_NEWS",
-    "TREND_SHIFT",
-    "EVENT_DRIVEN",
-    "BLACK_SWAN",
-    "DATA_ISSUE",
-    "MODEL_DEGRADATION",
+DEFAULT_AGENT_PLAN = {
+    "diagnosis": "INSUFFICIENT_EVIDENCE",
+    "decision": "MANUAL_REVIEW",
+    "strategy": "NO_ACTION",
+    "config_patch": {},
+    "reason": "Agent plan was unavailable; using conservative manual review.",
+    "confidence": 0.0,
+    "evidence_used": [],
 }
 
 
-def load_config() -> Dict[str, Any]:
-    with Path("configs/agent_config.yaml").open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def load_yaml_config(path: str) -> Dict[str, Any]:
+    config_path = Path(path)
+    if not config_path.exists():
+        return {}
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def node_validate_forecast(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=validate_forecast", ticker)
+
+    candidate = _candidate(state, "champion")
+    forecast_data = _as_dict(candidate.get("forecast_data"))
+    quantiles_fixed = _fix_quantile_crossing(forecast_data)
+    candidate["forecast_data"] = forecast_data
+    candidate["quantiles_fixed"] = quantiles_fixed
+    _append_audit(
+        state,
+        "validate_forecast",
+        "PASS",
+        f"Champion forecast validated; quantile crossing fixed={quantiles_fixed}.",
+    )
+    logger.info("Forecast validation completed | ticker=%s | quantiles_fixed=%s", ticker, quantiles_fixed)
+    return state
+
+
+def node_evaluate_monitoring(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=evaluate_monitoring", ticker)
+
+    _evaluate_candidate_monitoring(state, "champion")
+    diagnostics = build_model_diagnostics(state, "champion")
+    _candidate(state, "champion")["diagnostics"] = diagnostics
+    _as_dict(state["workflow"])["model_health_status"] = _candidate(state, "champion").get(
+        "monitoring_summary", {}
+    ).get("model_health_status", "MANUAL_REVIEW")
+    _append_audit(
+        state,
+        "evaluate_monitoring",
+        "PASS",
+        "Champion walk-forward, drift, regime, and risk monitoring completed.",
+        {"model_health_status": state["workflow"].get("model_health_status")},
+    )
+    return state
+
+
+def node_search_news_context(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=search_news_context", ticker)
+
+    try:
+        raw_news = tool_search_google_news(ticker, state.get("run_id"))
+        state["news"] = _group_news_result(raw_news)
+        status = state["news"].get("status", "UNKNOWN")
+        message = f"Google News context search completed with status={status}."
+    except Exception as exc:
+        state["news"] = {
+            "context": "NO_NEWS",
+            "found": False,
+            "items": [],
+            "items_count": 0,
+            "evidence_level": "NONE",
+            "shock_type": "NO_NEWS",
+            "status": "GOOGLE_NEWS_ERROR",
+            "sources": [],
+            "errors": [str(exc)],
+            "debug_path": "",
+            "keywords": [],
+            "queries": [],
+            "google_news_used": True,
+        }
+        message = f"Google News context search failed: {exc}"
+        logger.warning("News context search failed | ticker=%s | error=%s", ticker, exc)
+
+    _append_audit(state, "search_news_context", "PASS", message, {"news": state["news"]})
+    return state
+
+
+def node_plan_retrain(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=plan_retrain", ticker)
+
+    improvement_config = load_yaml_config("configs/improvement_config.yaml")
+    patch_policy = load_yaml_config("configs/config_patch_policy.yaml")
+    diagnostics = build_model_diagnostics(state, "champion")
+    retrain_policy = assess_retrain_need(diagnostics, improvement_config)
+
+    plan = dict(DEFAULT_AGENT_PLAN)
+    if not retrain_policy.get("should_plan_retrain"):
+        health = state["workflow"].get("model_health_status", "OK")
+        plan = {
+            "diagnosis": "MODEL_OK" if health == "OK" else "RISK_OR_MONITORING_REVIEW",
+            "decision": "MONITOR" if health in {"OK", "DEGRADED"} else "MANUAL_REVIEW",
+            "strategy": "NO_ACTION",
+            "config_patch": {},
+            "reason": "Deterministic retrain policy did not require challenger planning.",
+            "confidence": 0.6,
+            "evidence_used": retrain_policy.get("reasons", []),
+        }
+    else:
+        prompt = build_agent_diagnosis_prompt(diagnostics, improvement_config, patch_policy)
+        try:
+            response = _get_llm().invoke(
+                [
+                    SystemMessage(content="Return valid JSON only. Do not reveal chain-of-thought."),
+                    HumanMessage(content=prompt),
+                ]
+            ).content
+            parsed = _parse_json_response(response)
+            if parsed:
+                plan = _normalize_agent_plan(parsed)
+            else:
+                debug_path = _write_agent_debug_response(ticker, state.get("run_id"), response, "plan_retrain")
+                state["audit"].setdefault("debug_paths", {})["agent_plan_raw_response"] = str(debug_path)
+                logger.warning("Agent plan JSON parse failed | ticker=%s | debug_path=%s", ticker, debug_path)
+        except Exception as exc:
+            logger.warning("Agent retrain planning failed | ticker=%s | error=%s", ticker, exc)
+
+    state["improvement"] = {
+        "diagnostics": diagnostics,
+        "retrain_policy": retrain_policy,
+        "diagnosis": plan.get("diagnosis"),
+        "decision": plan.get("decision"),
+        "strategy": plan.get("strategy"),
+        "config_patch": plan.get("config_patch", {}),
+        "reason": plan.get("reason"),
+        "confidence": plan.get("confidence", 0.0),
+        "evidence_used": plan.get("evidence_used", []),
+        "technical_retrain_required": bool(retrain_policy.get("should_plan_retrain")),
+        "technical_retrain_reasons": retrain_policy.get("reasons", []),
+        "technical_retrain_strategy": retrain_policy.get("recommended_strategy", "NO_ACTION"),
+        "config_patch_source": "AGENT_PROPOSED" if plan.get("config_patch") else "NOT_REQUIRED",
+        "repair_attempts": 0,
+        "repair_history": [],
+    }
+    _append_audit(
+        state,
+        "technical_retrain_check",
+        "PASS",
+        "Technical retrain required=%s because %s"
+        % (
+            state["improvement"]["technical_retrain_required"],
+            "; ".join(state["improvement"]["technical_retrain_reasons"]) or "no technical degradation trigger fired",
+        ),
+        {"retrain_policy": retrain_policy},
+    )
+    _append_audit(
+        state,
+        "plan_retrain",
+        "PASS",
+        str(plan.get("reason", "Retrain plan prepared.")),
+        {"diagnosis": plan.get("diagnosis"), "decision": plan.get("decision"), "strategy": plan.get("strategy")},
+    )
+    return state
+
+
+def node_validate_or_repair_patch(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=validate_or_repair_patch", ticker)
+
+    improvement = state["improvement"]
+    retrain_required = bool(improvement.get("technical_retrain_required"))
+    decision = str(improvement.get("decision", "MONITOR")).upper()
+    train_requested = decision == "TRAIN_CHALLENGER"
+    if not retrain_required and not train_requested:
+        improvement.update(
+            {
+                "validated_config_patch": {},
+                "config_patch_valid": None,
+                "config_patch_validation_status": "NOT_REQUIRED",
+                "config_patch_warnings": [],
+                "config_patch_source": "NOT_REQUIRED",
+            }
+        )
+        _append_audit(
+            state,
+            "validate_config_patch",
+            "NOT_REQUIRED",
+            "Config patch validation skipped because no challenger training was requested.",
+        )
+        return state
+
+    patch_policy = load_yaml_config("configs/config_patch_policy.yaml")
+    base_config = load_yaml_config("configs/model_config.yaml")
+    diagnostics = improvement.get("diagnostics") or build_model_diagnostics(state, "champion")
+    patch = _as_dict(improvement.get("config_patch"))
+    effective_decision = "TRAIN_CHALLENGER"
+
+    validated_patch, warnings, is_valid = validate_config_patch(patch, patch_policy, base_config, decision=effective_decision)
+    repair_history = []
+    max_attempts = _max_patch_repair_attempts(patch_policy)
+
+    attempt = 0
+    while not is_valid and attempt < max_attempts:
+        attempt += 1
+        repaired_plan = _repair_agent_plan(
+            state=state,
+            previous_plan=improvement,
+            validation_warnings=warnings,
+            diagnostics=diagnostics,
+            config_patch_policy=patch_policy,
+            base_config=base_config,
+            attempt=attempt,
+        )
+        repaired_patch = _as_dict(repaired_plan.get("config_patch"))
+        validated_patch, repaired_warnings, is_valid = validate_config_patch(
+            repaired_patch,
+            patch_policy,
+            base_config,
+            decision=effective_decision,
+        )
+        repair_history.append(
+            {
+                "attempt": attempt,
+                "input_patch": patch,
+                "warnings": warnings,
+                "repaired_patch": repaired_patch,
+                "valid": is_valid,
+            }
+        )
+        patch = repaired_patch
+        warnings = repaired_warnings
+        improvement.update(_normalize_agent_plan(repaired_plan))
+
+    improvement["repair_attempts"] = attempt
+    improvement["repair_history"] = repair_history
+
+    if is_valid:
+        improvement.update(
+            {
+                "decision": "TRAIN_CHALLENGER",
+                "validated_config_patch": validated_patch,
+                "config_patch_valid": True,
+                "config_patch_validation_status": "VALID",
+                "config_patch_warnings": warnings,
+                "config_patch_source": "AGENT_PROPOSED" if attempt == 0 else "AGENT_REPAIRED",
+            }
+        )
+        status = "PASS"
+        message = "Config patch validation completed successfully."
+    else:
+        improvement.update(
+            {
+                "decision": "MANUAL_REVIEW",
+                "validated_config_patch": {},
+                "config_patch_valid": False,
+                "config_patch_validation_status": "INVALID",
+                "config_patch_warnings": warnings,
+                "config_patch_source": "INVALID",
+                "reason": "Technical retrain was required, but config patch validation failed.",
+            }
+        )
+        state["governance"] = {
+            "decision": "MANUAL_REVIEW",
+            "accepted_challenger": False,
+            "final_model": "champion",
+            "reason": improvement["reason"],
+        }
+        status = "FAIL"
+        message = improvement["reason"]
+
+    _append_audit(
+        state,
+        "validate_config_patch",
+        status,
+        message,
+        {
+            "valid": is_valid,
+            "warnings": warnings,
+            "validated_patch": validated_patch,
+            "repair_attempts": attempt,
+        },
+    )
+    return state
+
+
+def node_train_challenger(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=train_challenger", ticker)
+
+    improvement = state["improvement"]
+    patch = _as_dict(improvement.get("validated_config_patch"))
+    if not improvement.get("config_patch_valid") or not patch:
+        state["workflow"]["retrain_attempted"] = False
+        state["governance"] = {
+            "decision": "KEEP_CHAMPION",
+            "accepted_challenger": False,
+            "final_model": "champion",
+            "reason": "No valid config patch was available for challenger training.",
+        }
+        _append_audit(state, "train_challenger", "SKIP", state["governance"]["reason"])
+        return state
+
+    base_config = load_yaml_config("configs/model_config.yaml")
+    model_params, train_window_days = _build_challenger_model_params(base_config, patch)
+    try:
+        df = load_from_sqlite(f"processed_{ticker}")
+        if df.empty:
+            raise ValueError("Processed training data is empty.")
+        if train_window_days:
+            df = df.tail(train_window_days)
+        forecast_data = generate_7_day_forecast(df, model_params=model_params)
+        forecast_data["ticker"] = ticker
+        state["challenger"] = {
+            "forecast_data": forecast_data,
+            "validation_metrics": forecast_data.get("validation_metrics", {}),
+            "config_patch": patch,
+            "train_window_days": train_window_days,
+        }
+        state["workflow"]["retrain_count"] = int(state["workflow"].get("retrain_count", 0)) + 1
+        state["workflow"]["retrain_attempted"] = True
+        _append_audit(
+            state,
+            "train_challenger",
+            "PASS",
+            "Challenger model trained successfully.",
+            {"config_patch": patch, "train_window_days": train_window_days},
+        )
+    except Exception as exc:
+        state["workflow"]["retrain_attempted"] = True
+        state["audit"].setdefault("errors", []).append(str(exc))
+        state["governance"] = {
+            "decision": "KEEP_CHAMPION",
+            "accepted_challenger": False,
+            "final_model": "champion",
+            "reason": f"Challenger training failed: {exc}",
+        }
+        _append_audit(state, "train_challenger", "FAIL", state["governance"]["reason"])
+        logger.warning("Challenger training failed | ticker=%s | error=%s", ticker, exc)
+    return state
+
+
+def node_evaluate_challenger(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=evaluate_challenger", ticker)
+
+    if not _candidate(state, "challenger").get("forecast_data"):
+        _append_audit(state, "evaluate_challenger", "SKIP", "No challenger forecast was available.")
+        return state
+
+    forecast_data = _candidate(state, "challenger")["forecast_data"]
+    _candidate(state, "challenger")["quantiles_fixed"] = _fix_quantile_crossing(forecast_data)
+    _evaluate_candidate_monitoring(state, "challenger")
+    _candidate(state, "challenger")["diagnostics"] = build_model_diagnostics(state, "challenger")
+    _append_audit(state, "evaluate_challenger", "PASS", "Challenger monitoring completed.")
+    return state
+
+
+def node_compare_models(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=compare_models", ticker)
+
+    if not _candidate(state, "challenger").get("forecast_data"):
+        state["governance"] = {
+            "decision": state.get("governance", {}).get("decision", "KEEP_CHAMPION"),
+            "accepted_challenger": False,
+            "final_model": "champion",
+            "reason": state.get("governance", {}).get("reason", "No challenger candidate was available."),
+        }
+        _append_audit(state, "governance_review", state["governance"]["decision"], state["governance"]["reason"])
+        return state
+
+    champion_metrics = _metric_bundle(_candidate(state, "champion"))
+    challenger_metrics = _metric_bundle(_candidate(state, "challenger"))
+    governance_result = compare_model_candidates(
+        champion_metrics,
+        challenger_metrics,
+        load_yaml_config("configs/governance_config.yaml"),
+    )
+
+    final_model = "challenger" if governance_result.get("accepted_challenger") else "champion"
+    governance_result.update(
+        {
+            "final_model": final_model,
+            "champion_metrics": champion_metrics,
+            "challenger_metrics": challenger_metrics,
+        }
+    )
+
+    if not governance_result.get("accepted_challenger") and _both_candidates_poor(champion_metrics, challenger_metrics):
+        governance_result["decision"] = "MANUAL_REVIEW_AFTER_RETRAIN"
+        governance_result["reason"] += " Both champion and challenger remain below reliability gates."
+        final_model = "champion"
+        governance_result["final_model"] = final_model
+
+    state["governance"] = governance_result
+    state["workflow"]["active_candidate"] = final_model
+    _append_audit(
+        state,
+        "governance_review",
+        governance_result.get("decision", "KEEP_CHAMPION"),
+        governance_result.get("reason", "Governance review completed."),
+        governance_result,
+    )
+    return state
+
+
+def node_generate_report(state: AgentState) -> AgentState:
+    _ensure_state_defaults(state)
+    ticker = state.get("ticker", "UNKNOWN")
+    logger.info("Agent node started | ticker=%s | phase=generate_report", ticker)
+
+    final_model = _as_dict(state.get("governance")).get("final_model") or state["workflow"].get("active_candidate") or "champion"
+    if final_model not in {"champion", "challenger"}:
+        final_model = "champion"
+    final_candidate = _candidate(state, final_model)
+    recommendation = _build_recommendation(state, final_model, final_candidate)
+    state["recommendation"] = recommendation
+    _append_audit(
+        state,
+        "final_recommendation",
+        recommendation.get("final_action", "MANUAL_REVIEW"),
+        recommendation.get("decision_rationale", "Final recommendation generated."),
+        recommendation,
+    )
+    state["workflow"]["current_phase"] = "completed"
+    logger.info(
+        "Final recommendation generated | ticker=%s | final_model=%s | action=%s | confidence=%.2f",
+        ticker,
+        final_model,
+        recommendation.get("final_action"),
+        float(recommendation.get("confidence", 0.0) or 0.0),
+    )
+    return state
+
+
+def _evaluate_candidate_monitoring(state: AgentState, candidate_name: str) -> None:
+    ticker = state.get("ticker", "UNKNOWN")
+    candidate = _candidate(state, candidate_name)
+    forecast_data = _as_dict(candidate.get("forecast_data"))
+    validation_metrics = _as_dict(candidate.get("validation_metrics") or forecast_data.get("validation_metrics"))
+
+    df = load_from_sqlite(f"processed_{ticker}")
+    if df.empty:
+        candidate["monitoring_summary"] = {
+            "model_health_status": "MANUAL_REVIEW",
+            "reasons": ["Processed data unavailable for monitoring."],
+        }
+        return
+
+    regime_report = detect_regime(df)
+    reference_df, current_df = _split_reference_current(df)
+    drift_report = detect_drift(reference_df, current_df, validation_metrics)
+    risk_report = calculate_risk_report(
+        forecast_data,
+        validation_metrics=validation_metrics,
+        regime_report=regime_report,
+        drift_report=drift_report,
+    )
+    monitoring_summary = _monitoring_summary(validation_metrics, drift_report, regime_report, risk_report)
+
+    candidate.update(
+        {
+            "validation_metrics": validation_metrics,
+            "regime_report": regime_report,
+            "drift_report": drift_report,
+            "risk_report": risk_report,
+            "monitoring_summary": monitoring_summary,
+        }
+    )
+
+
+def _monitoring_summary(
+    validation_metrics: Dict[str, Any],
+    drift_report: Dict[str, Any],
+    regime_report: Dict[str, Any],
+    risk_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    improvement_config = load_yaml_config("configs/improvement_config.yaml")
+    rules = _as_dict(improvement_config.get("trigger_rules"))
+    metrics = _as_dict(validation_metrics.get("metrics"))
+    mape = _safe_float(metrics.get("mape"))
+    directional_accuracy = _safe_float(metrics.get("directional_accuracy"))
+    interval_95_coverage = _safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage")))
+    prediction_bias_pct = _safe_float(metrics.get("prediction_bias_pct"))
+    mape_threshold = _safe_float(rules.get("wf_mape_threshold")) or _safe_float(rules.get("mape_threshold")) or 0.03
+    min_da = _safe_float(rules.get("min_directional_accuracy")) or 0.50
+    min_cov = _safe_float(rules.get("min_interval_95_coverage")) or 0.85
+    max_bias = _safe_float(rules.get("max_abs_prediction_bias_pct"))
+
+    retrain_reasons = []
+    warning_reasons = []
+    if mape is None:
+        warning_reasons.append("Walk-forward MAPE unavailable.")
+    elif mape > mape_threshold:
+        retrain_reasons.append(f"Walk-forward MAPE {mape:.4f} exceeded threshold {mape_threshold:.4f}.")
+    if directional_accuracy is not None and directional_accuracy < min_da:
+        retrain_reasons.append(f"Directional accuracy {directional_accuracy:.4f} below minimum {min_da:.4f}.")
+    if interval_95_coverage is not None and interval_95_coverage < min_cov:
+        retrain_reasons.append(f"95% interval coverage {interval_95_coverage:.4f} below minimum {min_cov:.4f}.")
+    if max_bias is not None and prediction_bias_pct is not None and abs(prediction_bias_pct) > max_bias:
+        warning_reasons.append(f"Prediction bias pct {prediction_bias_pct:.4f} exceeded maximum {max_bias:.4f}.")
+    if drift_report.get("severity") == "HIGH" and float(drift_report.get("concept_score", 0) or 0) > 0:
+        retrain_reasons.append("High drift severity with concept-drift evidence.")
+    if risk_report.get("risk_level") in {"EXTREME_RISK", "EXTREME"} and drift_report.get("severity") in {"MEDIUM", "HIGH"}:
+        retrain_reasons.append("Extreme risk coincides with elevated drift.")
+
+    manual_review_reasons = []
+    if risk_report.get("risk_level") in {"EXTREME_RISK", "EXTREME"}:
+        manual_review_reasons.append("Risk level requires manual review.")
+    if drift_report.get("severity") == "HIGH" and float(drift_report.get("concept_score", 0) or 0) >= 3:
+        manual_review_reasons.append("High drift severity has strong concept evidence.")
+
+    if retrain_reasons:
+        health = "RETRAIN_REQUIRED"
+    elif manual_review_reasons:
+        health = "MANUAL_REVIEW"
+    elif warning_reasons or drift_report.get("severity") == "MEDIUM" or risk_report.get("risk_level") in {"MEDIUM_RISK", "HIGH_RISK"}:
+        health = "DEGRADED"
+    else:
+        health = "OK"
+
+    return {
+        "model_health_status": health,
+        "reasons": retrain_reasons + manual_review_reasons + warning_reasons,
+        "walk_forward": {
+            "mape": mape,
+            "directional_accuracy": directional_accuracy,
+            "interval_95_coverage": interval_95_coverage,
+            "prediction_bias_pct": prediction_bias_pct,
+        },
+        "drift_severity": drift_report.get("severity"),
+        "drift_scores": {
+            "feature_score": drift_report.get("feature_score"),
+            "target_score": drift_report.get("target_score"),
+            "concept_score": drift_report.get("concept_score"),
+            "total_score": drift_report.get("total_score"),
+        },
+        "regime_label": regime_report.get("final_regime_label"),
+        "risk_level": risk_report.get("risk_level"),
+    }
+
+
+def _build_recommendation(state: AgentState, final_model: str, candidate: Dict[str, Any]) -> Dict[str, Any]:
+    forecast_data = _as_dict(candidate.get("forecast_data"))
+    validation_metrics = _as_dict(candidate.get("validation_metrics"))
+    monitoring = _as_dict(candidate.get("monitoring_summary"))
+    drift = _as_dict(candidate.get("drift_report"))
+    regime = _as_dict(candidate.get("regime_report"))
+    risk = _as_dict(candidate.get("risk_report"))
+    news = _as_dict(state.get("news"))
+    governance = _as_dict(state.get("governance"))
+    improvement = _as_dict(state.get("improvement"))
+
+    action, reasons = _final_action(
+        forecast_data=forecast_data,
+        validation_metrics=validation_metrics,
+        monitoring=monitoring,
+        drift=drift,
+        risk=risk,
+        news=news,
+        governance=governance,
+        improvement=improvement,
+    )
+    confidence = _recommendation_confidence(action, validation_metrics, risk, drift, news)
+    evidence_used = _evidence_used(validation_metrics, drift, regime, risk, news, governance)
+    summary = (
+        f"Final research action is {action}. Final model={final_model}; "
+        f"risk_level={risk.get('risk_level', 'UNKNOWN')}; drift_severity={drift.get('severity', 'UNKNOWN')}; "
+        f"governance_decision={governance.get('decision', 'NOT_REQUIRED')}."
+    )
+    return {
+        "final_action": action,
+        "confidence": confidence,
+        "assessment_summary": summary,
+        "decision_rationale": " ".join(reasons),
+        "interpretation": {
+            "validation": _validation_summary(validation_metrics),
+            "risk": risk,
+            "drift": {
+                "severity": drift.get("severity"),
+                "concept_score": drift.get("concept_score"),
+                "recommended_action": drift.get("recommended_action"),
+            },
+            "regime": {
+                "final_regime_label": regime.get("final_regime_label"),
+                "volatility_regime": regime.get("volatility_regime"),
+                "trend_regime": regime.get("trend_regime"),
+                "volume_regime": regime.get("volume_regime"),
+            },
+            "news": {
+                "status": news.get("status", "NO_NEWS"),
+                "evidence_level": news.get("evidence_level", "NONE"),
+                "shock_type": news.get("shock_type", "NO_NEWS"),
+            },
+        },
+        "evidence_used": evidence_used,
+        "final_report": (
+            f"{summary} This is research output only, intended for paper-trading review and not financial advice."
+        ),
+    }
+
+
+def _final_action(
+    *,
+    forecast_data: Dict[str, Any],
+    validation_metrics: Dict[str, Any],
+    monitoring: Dict[str, Any],
+    drift: Dict[str, Any],
+    risk: Dict[str, Any],
+    news: Dict[str, Any],
+    governance: Dict[str, Any],
+    improvement: Dict[str, Any],
+) -> tuple[str, list[str]]:
+    metrics = _as_dict(validation_metrics.get("metrics"))
+    expected_return = _safe_float(risk.get("expected_return"), 0.0)
+    risk_reward_ratio = _safe_float(risk.get("risk_reward_ratio"), 0.0)
+    downside_risk = _safe_float(risk.get("downside_risk_95"), 0.0)
+    risk_level = str(risk.get("risk_level", "EXTREME_RISK")).upper()
+    drift_severity = str(drift.get("severity", "LOW")).upper()
+    concept_score = _safe_float(drift.get("concept_score"), 0.0)
+    reliability = _walk_forward_reliability(metrics)
+    news_evidence = str(news.get("evidence_level", "NONE")).upper()
+    reasons = []
+
+    if not forecast_data.get("forecasts"):
+        return "MANUAL_REVIEW", ["No valid forecast was available."]
+    if improvement.get("config_patch_validation_status") == "INVALID":
+        return "MANUAL_REVIEW", ["Technical retrain was required, but config patch validation failed."]
+    if governance.get("decision") in {"MANUAL_REVIEW", "MANUAL_REVIEW_AFTER_RETRAIN"}:
+        return "MANUAL_REVIEW", [str(governance.get("reason", "Governance requires manual review."))]
+    if risk_level in {"EXTREME_RISK", "EXTREME"}:
+        return "MANUAL_REVIEW", ["Extreme forecast risk requires manual review."]
+    if drift_severity == "HIGH" and concept_score > 0:
+        return "MANUAL_REVIEW", ["High drift with concept evidence requires manual review."]
+
+    if risk_level in {"HIGH_RISK", "MEDIUM_RISK", "HIGH", "MEDIUM"}:
+        reasons.append(f"Risk level {risk_level} caps the action at WATCH.")
+        return "WATCH", reasons
+    if drift_severity == "MEDIUM":
+        return "WATCH", ["Medium drift severity caps the action at WATCH."]
+    if reliability in {"WEAK", "DEGRADED"}:
+        return "WATCH", [f"Walk-forward reliability is {reliability}."]
+    if news_evidence in {"MEDIUM", "HIGH"}:
+        return "WATCH", ["Material news evidence requires watch state before directional action."]
+
+    if expected_return > 0.03 and risk_reward_ratio >= 1.25:
+        return "BUY", ["Expected return and risk/reward are positive while risk and drift gates are acceptable."]
+    if expected_return < -0.04 or downside_risk <= -0.08:
+        return "SELL", ["Expected return or downside risk is materially negative."]
+    return "HOLD", ["No strong directional condition passed after risk controls."]
+
+
+def _recommendation_confidence(
+    action: str,
+    validation_metrics: Dict[str, Any],
+    risk: Dict[str, Any],
+    drift: Dict[str, Any],
+    news: Dict[str, Any],
+) -> float:
+    metrics = _as_dict(validation_metrics.get("metrics"))
+    confidence = 0.55
+    da = _safe_float(metrics.get("directional_accuracy"), 0.5)
+    coverage = _safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage")), 0.75)
+    confidence += max(min(da - 0.5, 0.20), -0.20)
+    confidence += max(min(coverage - 0.75, 0.15), -0.15)
+    if risk.get("risk_level") == "LOW_RISK":
+        confidence += 0.05
+    if drift.get("severity") == "MEDIUM":
+        confidence -= 0.08
+    if news.get("evidence_level") in {"MEDIUM", "HIGH"}:
+        confidence -= 0.05
+    if action in {"WATCH", "MANUAL_REVIEW"}:
+        confidence = min(confidence, 0.60)
+    return round(min(max(confidence, 0.0), 0.95), 2)
+
+
+def _group_news_result(raw: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "context": raw.get("news_context", "NO_NEWS"),
+        "found": bool(raw.get("news_found", False)),
+        "items": raw.get("news_items", []),
+        "items_count": int(raw.get("news_items_count", 0) or 0),
+        "evidence_level": raw.get("evidence_level", "NONE"),
+        "shock_type": raw.get("shock_type", "NO_NEWS"),
+        "status": raw.get("news_status", "NO_NEWS"),
+        "sources": raw.get("news_sources", []),
+        "errors": raw.get("news_errors", []),
+        "debug_path": raw.get("news_debug_path", ""),
+        "keywords": raw.get("news_keywords", []),
+        "queries": raw.get("google_news_queries", []),
+        "google_news_used": bool(raw.get("google_news_used", True)),
+        "raw_news_items_count": int(raw.get("raw_news_items_count", 0) or 0),
+        "matched_news_items_count": int(raw.get("matched_news_items_count", 0) or 0),
+    }
+
+
+def _repair_agent_plan(
+    *,
+    state: AgentState,
+    previous_plan: Dict[str, Any],
+    validation_warnings: list[str],
+    diagnostics: Dict[str, Any],
+    config_patch_policy: Dict[str, Any],
+    base_config: Dict[str, Any],
+    attempt: int,
+) -> Dict[str, Any]:
+    try:
+        prompt = build_config_patch_repair_prompt(
+            previous_plan=previous_plan,
+            validation_warnings=validation_warnings,
+            diagnostics=diagnostics,
+            config_patch_policy=config_patch_policy,
+            base_config=base_config,
+        )
+        response = _get_llm().invoke(
+            [
+                SystemMessage(content="Return valid JSON only. Do not reveal chain-of-thought."),
+                HumanMessage(content=prompt),
+            ]
+        ).content
+        parsed = _parse_json_response(response)
+        if parsed:
+            return _normalize_agent_plan(parsed)
+        debug_path = _write_agent_debug_response(state.get("ticker", "UNKNOWN"), state.get("run_id"), response, f"repair_patch_{attempt}")
+        state["audit"].setdefault("debug_paths", {})[f"repair_patch_{attempt}_raw_response"] = str(debug_path)
+    except Exception as exc:
+        logger.warning("Config patch repair failed | ticker=%s | attempt=%s | error=%s", state.get("ticker"), attempt, exc)
+    return dict(DEFAULT_AGENT_PLAN)
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
@@ -45,274 +782,247 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     return _LLM
 
 
-def node_validate(state: AgentState) -> AgentState:
-    ticker = state.get("ticker", "UNKNOWN")
-    _ensure_state_defaults(state)
-    logger.info("Agent node started | ticker=%s | phase=validate_quantiles", ticker)
+def _ensure_state_defaults(state: AgentState) -> None:
+    state.setdefault("workflow", {})
+    state.setdefault("champion", {})
+    state.setdefault("challenger", {})
+    state.setdefault("news", {})
+    state.setdefault("improvement", {})
+    state.setdefault("governance", {})
+    state.setdefault("recommendation", {})
+    state.setdefault("audit", {})
+    state["workflow"].setdefault("current_phase", "agent_workflow")
+    state["workflow"].setdefault("model_health_status", "UNKNOWN")
+    state["workflow"].setdefault("retrain_count", 0)
+    state["workflow"].setdefault("max_retries", _configured_max_retries())
+    state["workflow"].setdefault("retrain_attempted", False)
+    state["workflow"].setdefault("active_candidate", "champion")
+    state["audit"].setdefault("trail", [])
+    state["audit"].setdefault("debug_paths", {})
+    state["audit"].setdefault("errors", [])
 
-    forecast_data = state["forecast_data"]
-    quantiles_fixed = False
-    for step in forecast_data.get("forecasts", []):
-        keys = ["q_0.025", "q_0.1", "q_0.5", "q_0.9", "q_0.975"]
-        values = [step[key] for key in keys if key in step]
-        if len(values) != len(keys):
+
+def _candidate(state: AgentState, candidate_name: str) -> Dict[str, Any]:
+    _ensure_state_defaults(state)
+    return state.setdefault(candidate_name, {})
+
+
+def _fix_quantile_crossing(forecast_data: Dict[str, Any]) -> bool:
+    fixed = False
+    keys = ["q_0.025", "q_0.1", "q_0.5", "q_0.9", "q_0.975"]
+    for step in forecast_data.get("forecasts", []) if isinstance(forecast_data, dict) else []:
+        if not all(key in step for key in keys):
             continue
+        values = [step[key] for key in keys]
         sorted_values = sorted(values)
         if values != sorted_values:
-            quantiles_fixed = True
+            fixed = True
             for key, value in zip(keys, sorted_values):
                 step[key] = value
-
-    state["quantiles_fixed"] = quantiles_fixed
-    _append_audit(
-        state,
-        "validate_quantiles",
-        "PASS",
-        f"Quantile crossing fixed={quantiles_fixed}.",
-    )
-    logger.info(
-        "Agent node completed | ticker=%s | phase=validate_quantiles | quantiles_fixed=%s",
-        ticker,
-        quantiles_fixed,
-    )
-    return state
+    return fixed
 
 
-def node_evaluate(state: AgentState) -> AgentState:
-    ticker = state.get("ticker", "UNKNOWN")
-    _ensure_state_defaults(state)
-    logger.info("Agent node started | ticker=%s | phase=evaluate_model", ticker)
-
-    metrics = state["forecast_data"].get("metrics", {})
-    validation_metrics = state["forecast_data"].get("validation_metrics", {})
-    state["validation_metrics"] = validation_metrics
-    threshold = load_config()["thresholds"]["max_mape"]
-    mape = float(metrics.get("MAPE", metrics.get("mape", 0.0)) or 0.0)
-    validation_summary = _validation_summary(validation_metrics)
-
-    if mape > threshold:
-        state["evaluation_status"] = "ABNORMAL"
-        state["evaluation_reason"] = f"Holdout MAPE {mape:.4f} exceeds threshold {threshold:.4f}."
-        log_level = logger.warning
-    else:
-        state["evaluation_status"] = "PASS"
-        state["evaluation_reason"] = f"Holdout MAPE {mape:.4f} is within threshold {threshold:.4f}."
-        log_level = logger.info
-
-    _append_audit(
-        state,
-        "evaluate_model",
-        state["evaluation_status"],
-        state["evaluation_reason"],
-        {
-            "holdout_mape": mape,
-            "walk_forward_directional_accuracy": validation_summary.get("directional_accuracy"),
-            "walk_forward_interval_95_coverage": validation_summary.get("interval_95_coverage"),
-        },
-    )
-    log_level(
-        "Model evaluation completed | ticker=%s | status=%s | holdout_mape=%.4f | threshold=%.4f | wf_da=%s | wf_cov95=%s",
-        ticker,
-        state["evaluation_status"],
-        mape,
-        threshold,
-        _fmt(validation_summary.get("directional_accuracy")),
-        _fmt(validation_summary.get("interval_95_coverage")),
-    )
-    return state
+def _build_challenger_model_params(base_config: Dict[str, Any], patch: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[int]]:
+    params = _as_dict(base_config.get("lightgbm_params")).copy()
+    train_window_days = None
+    for key, value in patch.items():
+        if key == "train_window_days":
+            train_window_days = int(value)
+        else:
+            params[key] = value
+    return params, train_window_days
 
 
-def node_contextualize(state: AgentState) -> AgentState:
-    ticker = state.get("ticker", "UNKNOWN")
-    _ensure_state_defaults(state)
-    logger.info("Agent node started | ticker=%s | phase=contextualize_news", ticker)
-
-    news_payload = tool_search_vietstock_news(ticker)
-    state["news_context"] = news_payload.get("news_context", "NO_NEWS")
-    state["news_found"] = bool(news_payload.get("news_found", False))
-    state["news_items_count"] = int(news_payload.get("news_items_count", 0))
-    state["news_items"] = news_payload.get("news_items", [])
-    state["evidence_level"] = news_payload.get("evidence_level", "NONE")
-    state["news_evidence"] = {
-        "news_found": state["news_found"],
-        "news_items_count": state["news_items_count"],
-        "evidence_level": state["evidence_level"],
-        "rss_errors": news_payload.get("rss_errors", []),
+def _metric_bundle(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    validation = _as_dict(candidate.get("validation_metrics"))
+    metrics = _as_dict(validation.get("metrics"))
+    risk = _as_dict(candidate.get("risk_report"))
+    drift = _as_dict(candidate.get("drift_report"))
+    return {
+        "mape": _safe_float(metrics.get("mape")),
+        "rmse": _safe_float(metrics.get("rmse")),
+        "mae": _safe_float(metrics.get("mae")),
+        "directional_accuracy": _safe_float(metrics.get("directional_accuracy")),
+        "interval_95_coverage": _safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage"))),
+        "pinball_loss": _safe_float(metrics.get("pinball_loss")),
+        "prediction_bias_pct": _safe_float(metrics.get("prediction_bias_pct")),
+        "risk_level": risk.get("risk_level"),
+        "drift_severity": drift.get("severity"),
     }
 
-    if not state["news_found"]:
-        assessment = {
-            "assessment": "No material company-specific or macro news was detected.",
-            "interpretation": (
-                "Forecast degradation is likely model-related or caused by short-term market noise. "
-                "There is insufficient evidence to attribute it to a specific external event."
-            ),
-            "shock_type": "NO_NEWS",
-            "evidence_level": "NONE",
-        }
-    else:
-        assessment = _invoke_context_committee(state)
 
-    shock_type = assessment.get("shock_type", "NO_NEWS")
-    if shock_type not in ALLOWED_SHOCK_TYPES:
-        shock_type = "EVENT_DRIVEN" if state["news_found"] else "NO_NEWS"
-
-    state["shock_type"] = shock_type
-    state["evidence_level"] = assessment.get("evidence_level", state["evidence_level"])
-    state["news_analysis"] = json.dumps(assessment, ensure_ascii=False)
-    state["agent_assessment_summary"] = _format_assessment_text(assessment)
-
-    _append_audit(
-        state,
-        "contextualize_news",
-        shock_type,
-        assessment.get("interpretation", ""),
-        state["news_evidence"],
+def _both_candidates_poor(champion: Dict[str, Any], challenger: Dict[str, Any]) -> bool:
+    return (
+        (_safe_float(champion.get("mape"), 0.0) > 0.03 and _safe_float(challenger.get("mape"), 0.0) > 0.03)
+        or (_safe_float(champion.get("directional_accuracy"), 1.0) < 0.50 and _safe_float(challenger.get("directional_accuracy"), 1.0) < 0.50)
+        or (_safe_float(champion.get("interval_95_coverage"), 1.0) < 0.80 and _safe_float(challenger.get("interval_95_coverage"), 1.0) < 0.80)
     )
-    logger.info(
-        "Agent assessment summary | ticker=%s | shock_type=%s | evidence_level=%s | news_items=%s",
-        ticker,
-        state["shock_type"],
-        state["evidence_level"],
-        state["news_items_count"],
-    )
-    return state
 
 
-def node_improve(state: AgentState) -> AgentState:
-    ticker = state.get("ticker", "UNKNOWN")
-    _ensure_state_defaults(state)
-    logger.info("Agent node started | ticker=%s | phase=model_governance", ticker)
-
-    retry_count = int(state.get("retry_count", 0))
-    max_retries = load_config()["thresholds"]["max_retries"]
-    if retry_count >= max_retries:
-        state["action_taken"] = "MAX_RETRIES_REACHED"
-        state["governance_decision"] = {
-            "decision": "KEEP_CHAMPION",
-            "accepted": False,
-            "reason": "Maximum retrain attempts reached.",
-            "retry_count": retry_count,
-        }
-        _append_audit(state, "model_governance", "KEEP_CHAMPION", "Maximum retrain attempts reached.")
-        return state
-
-    champion_forecast = state["forecast_data"]
-    config_path = Path("configs/model_config.yaml")
-    with config_path.open("r", encoding="utf-8") as f:
-        backup_config = yaml.safe_load(f)
-
-    shock_type = state.get("shock_type", "NO_NEWS")
-    if shock_type in {"TREND_SHIFT", "EVENT_DRIVEN"}:
-        action = tool_adjust_model_hyperparams("ADAPT_SHOCK")
-    elif retry_count == 0:
-        action = tool_adjust_model_hyperparams("FIX_OVERFITTING")
-    else:
-        action = tool_adjust_model_hyperparams("FIX_UNDERFITTING")
-
-    df = load_from_sqlite(f"processed_{ticker}")
-    challenger_forecast = generate_7_day_forecast(df)
-    decision = _compare_champion_challenger(champion_forecast, challenger_forecast)
-    decision["config_action"] = action
-    decision["retry_count"] = retry_count + 1
-
-    if decision["accepted"]:
-        state["forecast_data"] = challenger_forecast
-        state["validation_metrics"] = challenger_forecast.get("validation_metrics", {})
-        state["risk_report"] = calculate_risk_report(
-            challenger_forecast,
-            state.get("validation_metrics"),
-            state.get("regime_report"),
-            state.get("drift_report"),
-        )
-        state["signal_confidence"] = state["risk_report"].get("signal_confidence", 0.0)
-        state["action_taken"] = (
-            f"{action} | ACCEPT_CHALLENGER | reason={decision['reason']}"
-        )
-        logger.info(
-            "Governance decision | ticker=%s | decision=ACCEPT_CHALLENGER | reason=%s",
-            ticker,
-            decision["reason"],
-        )
-    else:
-        with config_path.open("w", encoding="utf-8") as f:
-            yaml.safe_dump(backup_config, f, sort_keys=False)
-        state["action_taken"] = f"{action} | KEEP_CHAMPION | reason={decision['reason']}"
-        logger.warning(
-            "Governance decision | ticker=%s | decision=KEEP_CHAMPION | reason=%s",
-            ticker,
-            decision["reason"],
-        )
-
-    state["governance_decision"] = decision
-    state["retry_count"] = retry_count + 1
-    _append_audit(state, "model_governance", decision["decision"], decision["reason"], decision)
-    return state
+def _validation_summary(validation_metrics: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = _as_dict(validation_metrics.get("metrics"))
+    return {
+        "evaluation_method": validation_metrics.get("evaluation_method", "walk_forward"),
+        "fold_count": validation_metrics.get("fold_count"),
+        "mape": metrics.get("mape"),
+        "rmse": metrics.get("rmse"),
+        "mae": metrics.get("mae"),
+        "smape": metrics.get("smape"),
+        "directional_accuracy": metrics.get("directional_accuracy"),
+        "interval_80_coverage": metrics.get("interval_80_coverage"),
+        "interval_95_coverage": metrics.get("interval_95_coverage", metrics.get("interval_coverage")),
+        "pinball_loss": metrics.get("pinball_loss"),
+        "prediction_bias_pct": metrics.get("prediction_bias_pct"),
+        "quantile_crossing_rate": metrics.get("quantile_crossing_rate"),
+    }
 
 
-def node_recommend(state: AgentState) -> AgentState:
-    ticker = state.get("ticker", "UNKNOWN")
-    _ensure_state_defaults(state)
-    logger.info("Agent node started | ticker=%s | phase=research_signal", ticker)
-
-    if not state.get("risk_report"):
-        state["risk_report"] = calculate_risk_report(
-            state["forecast_data"],
-            state.get("validation_metrics") or state["forecast_data"].get("validation_metrics"),
-            state.get("regime_report"),
-            state.get("drift_report"),
-        )
-
-    risk_report = state["risk_report"]
-    state["trading_signal"] = risk_report.get("preliminary_signal", "HOLD")
-    state["signal_confidence"] = float(risk_report.get("signal_confidence", 0.0) or 0.0)
-
-    committee_assessment = _invoke_recommendation_committee(state)
-    state["committee_assessment"] = committee_assessment
-    state["assessment_summary"] = committee_assessment.get(
-        "assessment_summary",
-        committee_assessment.get("assessment", "Committee assessment unavailable."),
-    )
-    state["interpretation"] = committee_assessment.get("interpretation", {})
-    state["decision_rationale"] = committee_assessment.get(
-        "decision_rationale",
-        committee_assessment.get("final_signal_reason", "Signal follows risk engine and governance checks."),
-    )
-    state["final_recommendation"] = committee_assessment.get(
-        "final_recommendation",
-        "Research signal only. No broker execution.",
-    )
-    state["evidence_used"] = committee_assessment.get("evidence_used", [])
-    state["agent_assessment_summary"] = state["assessment_summary"]
-
-    _append_audit(
-        state,
-        "research_signal",
-        state["trading_signal"],
-        f"Final research signal={state['trading_signal']}; confidence={state['signal_confidence']:.2f}.",
-        {"risk_level": risk_report.get("risk_level"), "risk_notes": risk_report.get("risk_notes", [])},
-    )
-    logger.warning(
-        "Final research signal | ticker=%s | signal=%s | confidence=%.2f | risk_level=%s",
-        ticker,
-        state["trading_signal"],
-        state["signal_confidence"],
-        risk_report.get("risk_level", "N/A"),
-    )
-    return state
+def _walk_forward_reliability(metrics: Dict[str, Any]) -> str:
+    mape = _safe_float(metrics.get("mape"))
+    da = _safe_float(metrics.get("directional_accuracy"))
+    cov = _safe_float(metrics.get("interval_95_coverage", metrics.get("interval_coverage")))
+    if mape is not None and mape > 0.05:
+        return "DEGRADED"
+    if da is not None and da < 0.48:
+        return "DEGRADED"
+    if cov is not None and cov < 0.70:
+        return "DEGRADED"
+    if (mape is not None and mape > 0.03) or (da is not None and da < 0.55) or (cov is not None and cov < 0.80):
+        return "WEAK"
+    return "RELIABLE"
 
 
-def _ensure_state_defaults(state: AgentState) -> None:
-    state.setdefault("retry_count", 0)
-    state.setdefault("audit_trail", [])
-    state.setdefault("news_context", "NO_NEWS")
-    state.setdefault("news_found", False)
-    state.setdefault("news_items_count", 0)
-    state.setdefault("evidence_level", "NONE")
-    state.setdefault("shock_type", "NO_NEWS")
-    state.setdefault("governance_decision", {})
-    if "validation_metrics" not in state and "forecast_data" in state:
-        state["validation_metrics"] = state["forecast_data"].get("validation_metrics", {})
+def _evidence_used(
+    validation_metrics: Dict[str, Any],
+    drift: Dict[str, Any],
+    regime: Dict[str, Any],
+    risk: Dict[str, Any],
+    news: Dict[str, Any],
+    governance: Dict[str, Any],
+) -> list[str]:
+    evidence = [
+        "walk_forward_validation",
+        "forecast_risk_metrics",
+        "drift_evidence_scores",
+        "regime_components",
+    ]
+    if news.get("google_news_used"):
+        evidence.append("google_news_rss")
+    if governance:
+        evidence.append("governance_comparison")
+    return evidence
+
+
+def _normalize_agent_plan(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    plan = dict(DEFAULT_AGENT_PLAN)
+    if not isinstance(parsed, dict):
+        return plan
+    plan.update(parsed)
+    decision = str(plan.get("decision", "MONITOR")).upper()
+    if decision in {"KEEP_MODEL", "NO_ACTION"}:
+        decision = "MONITOR"
+    if decision in {"RETRAIN_RECENT_WINDOW", "TRAIN_CHALLENGER"}:
+        decision = "TRAIN_CHALLENGER"
+    if decision in {"MANUAL_REVIEW_ONLY", "MANUAL_REVIEW"}:
+        decision = "MANUAL_REVIEW"
+    if decision not in {"MONITOR", "TRAIN_CHALLENGER", "MANUAL_REVIEW"}:
+        decision = "MANUAL_REVIEW"
+    plan["decision"] = decision
+    plan["strategy"] = str(plan.get("strategy", "NO_ACTION")).upper()
+    if plan["strategy"] == "MANUAL_REVIEW_ONLY":
+        plan["strategy"] = "NO_ACTION"
+    plan["config_patch"] = _as_dict(plan.get("config_patch"))
+    plan["confidence"] = max(0.0, min(float(_safe_float(plan.get("confidence"), 0.0)), 1.0))
+    evidence = plan.get("evidence_used", [])
+    plan["evidence_used"] = evidence if isinstance(evidence, list) else [str(evidence)]
+    plan["reason"] = str(plan.get("reason", "No reason supplied."))
+    plan["diagnosis"] = str(plan.get("diagnosis", "INSUFFICIENT_EVIDENCE"))
+    return plan
+
+
+def _parse_json_response(content: Any) -> Dict[str, Any]:
+    content = _coerce_response_text(content).strip()
+    if not content:
+        return {}
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    json_object = _extract_first_json_object(content)
+    if not json_object:
+        return {}
+    try:
+        return json.loads(json_object)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _coerce_response_text(content: Any) -> str:
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or content)
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = ast.literal_eval(stripped)
+                return _coerce_response_text(parsed)
+            except (ValueError, SyntaxError):
+                return content
+        return content
+    return str(content or "")
+
+
+def _extract_first_json_object(content: str) -> str:
+    start = content.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(content)):
+        char = content[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start : index + 1]
+    return ""
+
+
+def _write_agent_debug_response(ticker: str, run_id: str | None, response: Any, phase: str) -> Path:
+    AGENT_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    run_date = datetime.now().strftime("%Y-%m-%d")
+    debug_id = run_id or datetime.now().strftime("%H%M%S")
+    path = AGENT_DEBUG_DIR / f"{ticker}_{phase}_{run_date}_{debug_id}.txt"
+    path.write_text(str(response), encoding="utf-8")
+    return path
 
 
 def _append_audit(
@@ -322,509 +1032,49 @@ def _append_audit(
     message: str,
     details: Optional[Dict[str, Any]] = None,
 ) -> None:
-    state.setdefault("audit_trail", [])
-    state["audit_trail"].append(
+    _ensure_state_defaults(state)
+    state["audit"].setdefault("trail", []).append(
         {
             "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "phase": phase,
-            "status": status,
+            "node_execution_status": status,
             "message": message,
             "details": details or {},
         }
     )
 
 
-def _invoke_context_committee(state: AgentState) -> Dict[str, Any]:
-    prompt = f"""
-You are a Quantitative Risk Committee Agent and Market Context Analyst.
+def _split_reference_current(df: pd.DataFrame, current_window: int = 60) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if len(df) <= current_window * 2:
+        split_idx = max(1, int(len(df) * 0.7))
+        return df.iloc[:split_idx], df.iloc[split_idx:]
+    return df.iloc[:-current_window], df.iloc[-current_window:]
 
-Use only the evidence below. Do not invent news, causes, funds, trading activity, or operational incidents.
-Do not reveal chain-of-thought. Provide a concise JSON object only.
 
-Ticker: {state.get("ticker")}
-Evaluation status: {state.get("evaluation_status")}
-Evaluation reason: {state.get("evaluation_reason")}
-News evidence level: {state.get("evidence_level")}
-News items:
-{state.get("news_context", "NO_NEWS")}
-
-Allowed shock_type values:
-NO_NEWS, TREND_SHIFT, EVENT_DRIVEN, BLACK_SWAN, DATA_ISSUE, MODEL_DEGRADATION
-
-Return JSON with keys:
-assessment, interpretation, shock_type, evidence_level.
-If evidence is weak, say "insufficient evidence" in interpretation.
-"""
+def _configured_max_retries() -> int:
+    agent_config = load_yaml_config("configs/agent_config.yaml")
     try:
-        response = _get_llm().invoke([HumanMessage(content=prompt)]).content
-        parsed = _parse_json_response(response)
-        if parsed:
-            return parsed
-    except Exception as exc:
-        logger.warning("Context committee LLM call failed | error=%s", exc)
-
-    return {
-        "assessment": "Relevant news was detected, but the automated assessment could not be completed.",
-        "interpretation": "insufficient evidence to attribute forecast degradation to a specific external event.",
-        "shock_type": "EVENT_DRIVEN",
-        "evidence_level": state.get("evidence_level", "LOW"),
-    }
+        return int(_as_dict(agent_config.get("thresholds")).get("max_retries", 1))
+    except (TypeError, ValueError):
+        return 1
 
 
-def _invoke_recommendation_committee(state: AgentState) -> Dict[str, Any]:
-    evidence = _recommendation_evidence_bundle(state)
-    prompt = f"""
-You are a Quantitative Risk Committee Agent and Model Governance Reviewer.
-
-Use only the provided state. Do not invent news, hidden market activity, fund activity, or causes without evidence.
-Do not reveal chain-of-thought. This is research/paper trading only, not order execution.
-Return concise JSON only. Missing values must be written as "not available" or omitted safely.
-
-Required writing style:
-- Explain what each metric means, whether it is supportive or risky, and how it affects the signal.
-- Use phrases such as "based on available metrics", "the data suggests", and
-  "this should be treated as a risk-control signal, not a directional trading conviction" when appropriate.
-- If model_status is PASS but the risk engine signal is MANUAL_REVIEW, explicitly explain the conflict.
-- If news_found is false, write "No relevant news evidence was found." and do not speculate about events.
-- Do not instruct the user to buy, sell, hold, maintain, or reduce exposure. Describe the research signal and controls only.
-
-Ticker: {state.get("ticker")}
-Evidence bundle:
-{json.dumps(evidence, ensure_ascii=False, indent=2)}
-
-Return JSON with keys:
-assessment_summary, interpretation, decision_rationale, final_recommendation, evidence_used.
-
-The interpretation value must be an object with exactly these keys:
-forecast_performance, validation_reliability, risk_profile, market_regime,
-drift_condition, news_context_evidence, governance_retrain_status.
-
-The interpretation must address these evidence groups when available:
-1. Forecast performance: holdout MAE, holdout RMSE, holdout MAPE, model status, threshold.
-2. Walk-forward validation: MAPE, directional accuracy, interval_95_coverage, fold count.
-3. Forecast distribution: expected_return_7d, downside_risk_95, upside_potential_95,
-   forecast interval width, median forecast.
-4. Risk engine: risk_level, VaR 95, Expected Shortfall, risk_reward_ratio,
-   preliminary/final signal, signal_confidence.
-5. Market regime: volatility_regime, trend_regime, liquidity_regime, regime_confidence.
-6. Drift detection: severity, feature/target/concept drift flags, drifted_features.
-7. News/context: news_found, evidence_level, shock_type, news summary.
-8. Governance/retrain: retrain_attempts, governance_decision, action_taken,
-   champion/challenger comparison, rollback if present.
-
-Keep the answer professional, evidence-based, and not financial advice.
-"""
+def _max_patch_repair_attempts(policy: Dict[str, Any]) -> int:
+    rules = _as_dict(policy.get("policy"))
     try:
-        response = _get_llm().invoke(
-            [
-                SystemMessage(content="You produce evidence-based quant risk summaries in valid JSON."),
-                HumanMessage(content=prompt),
-            ]
-        ).content
-        parsed = _parse_json_response(response)
-        if parsed:
-            return _normalize_committee_assessment(parsed, state, evidence)
-    except Exception as exc:
-        logger.warning("Recommendation committee LLM call failed | error=%s", exc)
-
-    return _fallback_committee_assessment(state, evidence)
+        return int(rules.get("max_patch_repair_attempts", 1))
+    except (TypeError, ValueError):
+        return 1
 
 
-def _recommendation_evidence_bundle(state: AgentState) -> Dict[str, Any]:
-    forecast_data = state.get("forecast_data", {})
-    if not isinstance(forecast_data, dict):
-        forecast_data = {}
-    holdout = forecast_data.get("metrics", {}) if isinstance(forecast_data, dict) else {}
-    validation_report = state.get("validation_metrics") or forecast_data.get("validation_metrics", {})
-    validation = _validation_summary(validation_report)
-    risk = state.get("risk_report", {})
-    regime = state.get("regime_report", {})
-    drift = state.get("drift_report", {})
-    governance = state.get("governance_decision", {})
-    threshold = _configured_mape_threshold()
-    distribution = _forecast_distribution_summary(forecast_data, risk)
-    news = {
-        "news_found": state.get("news_found", False),
-        "news_items_count": state.get("news_items_count", 0),
-        "evidence_level": state.get("evidence_level", "NONE"),
-        "shock_type": state.get("shock_type", "NO_NEWS"),
-        "summary": state.get("news_context", "NO_NEWS"),
-        "news_evidence": state.get("news_evidence", {}),
-    }
-
-    evidence_used = []
-    if holdout:
-        evidence_used.append("holdout_metrics")
-    if validation:
-        evidence_used.append("walk_forward_validation")
-    if distribution:
-        evidence_used.append("forecast_distribution")
-    if risk:
-        evidence_used.append("risk_report")
-    if regime:
-        evidence_used.append("regime_report")
-    if drift:
-        evidence_used.append("drift_report")
-    evidence_used.append("news_context")
-    evidence_used.append("governance_status")
-
-    return {
-        "model": {
-            "status": state.get("evaluation_status", "not available"),
-            "reason": state.get("evaluation_reason", "not available"),
-            "threshold": threshold,
-            "holdout_mae": holdout.get("MAE", holdout.get("mae", "not available")),
-            "holdout_rmse": holdout.get("RMSE", holdout.get("rmse", "not available")),
-            "holdout_mape": holdout.get("MAPE", holdout.get("mape", "not available")),
-        },
-        "walk_forward_validation": validation,
-        "forecast_distribution": distribution,
-        "risk_engine": {
-            "risk_level": risk.get("risk_level", "not available"),
-            "var_95": risk.get("var_95", "not available"),
-            "expected_shortfall": risk.get("expected_shortfall", "not available"),
-            "risk_reward_ratio": risk.get("risk_reward_ratio", "not available"),
-            "expected_return_7d": risk.get("expected_return_7d", "not available"),
-            "downside_risk_95": risk.get("downside_risk_95", "not available"),
-            "upside_potential_95": risk.get("upside_potential_95", "not available"),
-            "preliminary_signal": risk.get("preliminary_signal", "not available"),
-            "final_signal": state.get("trading_signal", risk.get("preliminary_signal", "not available")),
-            "signal_confidence": state.get("signal_confidence", risk.get("signal_confidence", "not available")),
-            "risk_notes": risk.get("risk_notes", []),
-        },
-        "market_regime": {
-            "volatility_regime": regime.get("volatility_regime", "not available"),
-            "trend_regime": regime.get("trend_regime", "not available"),
-            "liquidity_regime": regime.get("liquidity_regime", "not available"),
-            "regime_confidence": regime.get("regime_confidence", "not available"),
-            "regime_notes": regime.get("regime_notes", []),
-        },
-        "drift_detection": {
-            "severity": drift.get("severity", "not available"),
-            "feature_drift_detected": drift.get("feature_drift_detected", "not available"),
-            "target_drift_detected": drift.get("target_drift_detected", "not available"),
-            "concept_drift_detected": drift.get("concept_drift_detected", "not available"),
-            "drifted_features": drift.get("drifted_features", []),
-            "recommended_action": drift.get("recommended_action", "not available"),
-            "drift_notes": drift.get("drift_notes", []),
-        },
-        "news_context": news,
-        "governance_retrain": {
-            "retrain_attempts": state.get("retry_count", 0),
-            "governance_decision": governance,
-            "action_taken": state.get("action_taken", "not available"),
-            "champion_metrics": governance.get("champion_metrics", {}),
-            "challenger_metrics": governance.get("challenger_metrics", {}),
-            "rollback": governance.get("rollback", "not available"),
-        },
-        "evidence_used": evidence_used,
-    }
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
-def _configured_mape_threshold() -> Any:
-    try:
-        return load_config().get("thresholds", {}).get("max_mape", "not available")
-    except Exception:
-        return "not available"
-
-
-def _forecast_distribution_summary(forecast_data: Dict[str, Any], risk: Dict[str, Any]) -> Dict[str, Any]:
-    forecasts = forecast_data.get("forecasts", []) if isinstance(forecast_data, dict) else []
-    if not forecasts:
-        return {}
-    final_step = forecasts[-1]
-    current_price = _as_float(forecast_data.get("current_price"))
-    lower_95 = _as_float(final_step.get("q_0.025"))
-    median = _as_float(final_step.get("q_0.5"))
-    upper_95 = _as_float(final_step.get("q_0.975"))
-    interval_width = None
-    interval_width_pct = None
-    if lower_95 is not None and upper_95 is not None:
-        interval_width = upper_95 - lower_95
-        if current_price and current_price > 0:
-            interval_width_pct = interval_width / current_price
-    return {
-        "horizon_step": final_step.get("step", "not available"),
-        "current_price": current_price if current_price is not None else "not available",
-        "median_forecast": median if median is not None else "not available",
-        "lower_95_forecast": lower_95 if lower_95 is not None else "not available",
-        "upper_95_forecast": upper_95 if upper_95 is not None else "not available",
-        "forecast_interval_width": interval_width if interval_width is not None else "not available",
-        "forecast_interval_width_pct": interval_width_pct if interval_width_pct is not None else "not available",
-        "expected_return_7d": risk.get("expected_return_7d", "not available"),
-        "downside_risk_95": risk.get("downside_risk_95", "not available"),
-        "upside_potential_95": risk.get("upside_potential_95", "not available"),
-    }
-
-
-def _normalize_committee_assessment(
-    parsed: Dict[str, Any],
-    state: AgentState,
-    evidence: Dict[str, Any],
-) -> Dict[str, Any]:
-    fallback = _fallback_committee_assessment(state, evidence)
-    interpretation = parsed.get("interpretation", fallback["interpretation"])
-    if not isinstance(interpretation, dict):
-        interpretation = {"forecast_performance": str(interpretation)}
-    for key, value in fallback["interpretation"].items():
-        interpretation.setdefault(key, value)
-    interpretation["risk_profile"] = fallback["interpretation"]["risk_profile"]
-    if not state.get("news_found", False):
-        interpretation["news_context_evidence"] = fallback["interpretation"]["news_context_evidence"]
-
-    evidence_used = parsed.get("evidence_used", evidence.get("evidence_used", []))
-    if not isinstance(evidence_used, list):
-        evidence_used = evidence.get("evidence_used", [])
-
-    return {
-        "assessment_summary": parsed.get(
-            "assessment_summary",
-            parsed.get("assessment", fallback["assessment_summary"]),
-        ),
-        "interpretation": interpretation,
-        "decision_rationale": parsed.get(
-            "decision_rationale",
-            parsed.get("final_signal_reason", fallback["decision_rationale"]),
-        ),
-        "final_recommendation": _safe_final_recommendation(
-            parsed.get("final_recommendation"),
-            fallback["final_recommendation"],
-        ),
-        "evidence_used": evidence_used,
-    }
-
-
-def _fallback_committee_assessment(state: AgentState, evidence: Dict[str, Any]) -> Dict[str, Any]:
-    model = evidence.get("model", {})
-    validation = evidence.get("walk_forward_validation", {})
-    distribution = evidence.get("forecast_distribution", {})
-    risk = evidence.get("risk_engine", {})
-    regime = evidence.get("market_regime", {})
-    drift = evidence.get("drift_detection", {})
-    news = evidence.get("news_context", {})
-    governance = evidence.get("governance_retrain", {})
-    final_signal = risk.get("final_signal", state.get("trading_signal", "HOLD"))
-    model_status = model.get("status", "not available")
-    risk_level = risk.get("risk_level", "not available")
-    drift_severity = drift.get("severity", "not available")
-
-    interpretation = {
-        "forecast_performance": (
-            "Based on available metrics, model status is "
-            f"{model_status}; holdout MAPE is {_fmt_pct(model.get('holdout_mape'))} versus the configured "
-            f"threshold of {_fmt_pct(model.get('threshold'))}. Holdout MAE is {_fmt_num(model.get('holdout_mae'))} "
-            f"and RMSE is {_fmt_num(model.get('holdout_rmse'))}, which describe average forecast error and "
-            "larger-error sensitivity respectively."
-        ),
-        "validation_reliability": (
-            f"Walk-forward MAPE is {_fmt_pct(validation.get('mape'))} across "
-            f"{validation.get('fold_count', 'not available')} folds. Directional accuracy is "
-            f"{_fmt_pct(validation.get('directional_accuracy'))}, so the data suggests direction calls are only "
-            f"modestly informative. The 95% interval coverage is {_fmt_pct(validation.get('interval_95_coverage'))}; "
-            "coverage below 95% reduces confidence in the uncertainty estimate."
-        ),
-        "risk_profile": (
-            f"The 7-day median forecast is {_fmt_num(distribution.get('median_forecast'))} with a 95% interval "
-            f"width of {_fmt_num(distribution.get('forecast_interval_width'))} "
-            f"({_fmt_pct(distribution.get('forecast_interval_width_pct'))} of current price). Expected return is "
-            f"{_fmt_pct(risk.get('expected_return_7d'))}, downside risk is {_fmt_pct(risk.get('downside_risk_95'))}, "
-            f"upside potential is {_fmt_pct(risk.get('upside_potential_95'))}, VaR 95 is "
-            f"{_fmt_pct(risk.get('var_95'))}, Expected Shortfall is {_fmt_pct(risk.get('expected_shortfall'))}, "
-            f"and risk/reward is {_fmt_num(risk.get('risk_reward_ratio'))}. The risk engine reports "
-            f"{risk_level} risk with signal confidence {_fmt_num(risk.get('signal_confidence'))}."
-        ),
-        "market_regime": (
-            f"Current regime is volatility={regime.get('volatility_regime', 'not available')}, "
-            f"trend={regime.get('trend_regime', 'not available')}, liquidity={regime.get('liquidity_regime', 'not available')}, "
-            f"with confidence {_fmt_num(regime.get('regime_confidence'))}. This context affects how aggressively "
-            "the forecast should be trusted."
-        ),
-        "drift_condition": (
-            f"Drift severity is {drift_severity}; feature drift={drift.get('feature_drift_detected', 'not available')}, "
-            f"target drift={drift.get('target_drift_detected', 'not available')}, and concept drift="
-            f"{drift.get('concept_drift_detected', 'not available')}. Drifted feature count is "
-            f"{len(drift.get('drifted_features', []) or [])}, which can reduce confidence even when holdout metrics pass."
-        ),
-        "news_context_evidence": _news_interpretation(news),
-        "governance_retrain_status": (
-            f"Retrain attempts={governance.get('retrain_attempts', 0)}; governance decision="
-            f"{governance.get('governance_decision') or 'not available'}; action taken="
-            f"{governance.get('action_taken', 'not available')}. Champion/challenger comparison is "
-            f"{'available' if governance.get('champion_metrics') or governance.get('challenger_metrics') else 'not available'}."
-        ),
-    }
-
-    conflict = ""
-    if model_status == "PASS" and final_signal == "MANUAL_REVIEW":
-        conflict = (
-            " Although the model passed the MAPE threshold, the risk engine raised MANUAL_REVIEW because "
-            f"risk_level={risk_level} and drift severity={drift_severity}; therefore the decision is conservative."
-        )
-
-    return {
-        "assessment_summary": (
-            f"Based on available metrics, the model status is {model_status} and the final research signal is "
-            f"{final_signal} with risk level {risk_level}."
-        ),
-        "interpretation": interpretation,
-        "decision_rationale": (
-            f"The final signal remains controlled by the risk engine, not by the language model.{conflict} "
-            f"The data suggests the signal should be read together with validation reliability, regime, drift, and news evidence."
-        ),
-        "final_recommendation": (
-            f"Treat {final_signal} as a research and risk-control output only. This should be treated as a "
-            "risk-control signal, not a directional trading conviction. This is research output only and not financial advice."
-        ),
-        "evidence_used": evidence.get("evidence_used", []),
-    }
-
-
-def _news_interpretation(news: Dict[str, Any]) -> str:
-    if not news.get("news_found", False):
-        return (
-            "No relevant news evidence was found. shock_type=NO_NEWS and evidence_level=NONE; "
-            "there is insufficient evidence to attribute this to a specific news event."
-        )
-    return (
-        f"News evidence was found with evidence_level={news.get('evidence_level', 'not available')} "
-        f"and shock_type={news.get('shock_type', 'not available')}. The assessment should rely only on the "
-        "provided news summary and avoid unsupported causal claims."
-    )
-
-
-def _safe_final_recommendation(value: Any, fallback: str) -> str:
-    text = str(value).strip() if value else fallback
-    disclaimer = "This is research output only and not financial advice."
-    if "not financial advice" not in text.lower():
-        text = f"{text} {disclaimer}"
-    return text
-
-
-def _compare_champion_challenger(
-    champion_forecast: Dict[str, Any],
-    challenger_forecast: Dict[str, Any],
-) -> Dict[str, Any]:
-    champion = _metric_bundle(champion_forecast)
-    challenger = _metric_bundle(challenger_forecast)
-
-    old_mape = champion.get("holdout_mape") or 1.0
-    new_mape = challenger.get("holdout_mape") or 1.0
-    old_da = champion.get("directional_accuracy")
-    new_da = challenger.get("directional_accuracy")
-    old_cov = champion.get("interval_95_coverage")
-    new_cov = challenger.get("interval_95_coverage")
-    old_rmse = champion.get("rmse")
-    new_rmse = challenger.get("rmse")
-
-    gates = {
-        "mape_improved": new_mape < old_mape,
-        "directional_accuracy_ok": _not_degraded(old_da, new_da, max_degradation=0.03),
-        "interval_95_coverage_ok": _not_degraded(old_cov, new_cov, max_degradation=0.08),
-        "rmse_ok": True if old_rmse is None or new_rmse is None else new_rmse <= old_rmse * 1.10,
-    }
-    accepted = all(gates.values())
-    reason = (
-        "MAPE improved and validation gates passed."
-        if accepted
-        else "Challenger rejected because one or more governance gates failed."
-    )
-    return {
-        "decision": "ACCEPT_CHALLENGER" if accepted else "KEEP_CHAMPION",
-        "accepted": accepted,
-        "reason": reason,
-        "champion_metrics": champion,
-        "challenger_metrics": challenger,
-        "gates": gates,
-    }
-
-
-def _metric_bundle(forecast: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    holdout = forecast.get("metrics", {})
-    validation = _validation_summary(forecast.get("validation_metrics", {}))
-    return {
-        "holdout_mape": _as_float(holdout.get("MAPE", holdout.get("mape"))),
-        "holdout_mae": _as_float(holdout.get("MAE", holdout.get("mae"))),
-        "rmse": _as_float(validation.get("rmse") or holdout.get("RMSE") or holdout.get("rmse")),
-        "directional_accuracy": _as_float(validation.get("directional_accuracy")),
-        "interval_95_coverage": _as_float(validation.get("interval_95_coverage")),
-    }
-
-
-def _validation_summary(validation_metrics: Dict[str, Any]) -> Dict[str, Any]:
-    metrics = validation_metrics.get("metrics") if isinstance(validation_metrics, dict) else {}
-    if not isinstance(metrics, dict):
-        return {}
-    return {
-        "status": validation_metrics.get("status"),
-        "fold_count": validation_metrics.get("fold_count"),
-        "mae": metrics.get("mae"),
-        "rmse": metrics.get("rmse"),
-        "mape": metrics.get("mape"),
-        "smape": metrics.get("smape"),
-        "directional_accuracy": metrics.get("directional_accuracy"),
-        "interval_95_coverage": metrics.get("interval_95_coverage", metrics.get("interval_coverage")),
-        "pinball_loss": metrics.get("pinball_loss"),
-        "prediction_bias": metrics.get("prediction_bias"),
-    }
-
-
-def _not_degraded(old_value: Optional[float], new_value: Optional[float], max_degradation: float) -> bool:
-    if old_value is None or new_value is None:
-        return True
-    return new_value >= old_value - max_degradation
-
-
-def _parse_json_response(content: str) -> Dict[str, Any]:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-        if not match:
-            return {}
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return {}
-
-
-def _format_assessment_text(assessment: Dict[str, Any]) -> str:
-    return (
-        f"Assessment:\n{assessment.get('assessment', 'N/A')}\n\n"
-        f"Interpretation:\n{assessment.get('interpretation', 'N/A')}\n\n"
-        f"Shock classification:\n{assessment.get('shock_type', 'NO_NEWS')}"
-    )
-
-
-def _format_final_recommendation(state: AgentState, committee: Dict[str, Any]) -> str:
-    return (
-        f"Assessment:\n{committee.get('assessment', 'N/A')}\n\n"
-        f"Interpretation:\n{committee.get('interpretation', 'N/A')}\n\n"
-        f"Limitations:\n{committee.get('limitations', 'Research signal only. No broker execution.')}\n\n"
-        f"Final research signal:\n{state.get('trading_signal', 'HOLD')}\n"
-        f"Confidence: {state.get('signal_confidence', 0.0):.2f}\n"
-        f"Reason: {committee.get('final_signal_reason', 'Signal follows risk engine and governance checks.')}"
-    )
-
-
-def _as_float(value: Any) -> Optional[float]:
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     if value is None:
-        return None
+        return default
     try:
         return float(value)
     except (TypeError, ValueError):
-        return None
-
-
-def _fmt(value: Any) -> str:
-    number = _as_float(value)
-    return "N/A" if number is None else f"{number:.4f}"
-
-
-def _fmt_num(value: Any) -> str:
-    number = _as_float(value)
-    return "not available" if number is None else f"{number:,.4f}"
-
-
-def _fmt_pct(value: Any) -> str:
-    number = _as_float(value)
-    return "not available" if number is None else f"{number * 100:.2f}%"
+        return default

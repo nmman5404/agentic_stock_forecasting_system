@@ -12,6 +12,4 @@ langchain-google-genai
 python-dotenv
 pyyaml
 plotly
-jinja2
 feedparser
-beautifulsoup4

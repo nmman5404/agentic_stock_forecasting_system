@@ -1,96 +1,72 @@
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
 import lightgbm as lgb
-from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
+import numpy as np
+import pandas as pd
 import yaml
-import os
+
 from utils.logger import get_logger
 
 logger = get_logger("ModelTrainer")
 
-def load_config():
-    with open("configs/model_config.yaml", "r") as f:
-        return yaml.safe_load(f)
+
+def load_config() -> Dict[str, Any]:
+    with open("configs/model_config.yaml", "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
 
 class QuantileLightGBM:
-    def __init__(self, target_col='close', holdout_days=30):
+    """LightGBM quantile forecaster that predicts future returns, then maps them to prices."""
+
+    def __init__(self, target_col: str = "close", model_params: Optional[Dict[str, Any]] = None):
         self.target_col = target_col
-        self.holdout_days = holdout_days
-        self.config = load_config()['lightgbm_params']
+        self.config = model_params.copy() if model_params is not None else load_config().get("lightgbm_params", {})
         self.quantiles = [0.025, 0.1, 0.5, 0.9, 0.975]
-        self.features =[]
+        self.features: List[str] = []
 
-    def prepare_data(self, df, step=1):
-        """
-        Thay vì dự đoán Giá, ta dự đoán % Thay đổi (Return) từ ngày T đến ngày T + step.
-        """
-        df = df.copy()
-        self.features = [col for col in df.columns if col not in ['ticker', 'date', 'target']]
-        
-        # Target = (Close_{T+step} - Close_T) / Close_T
-        df['target'] = (df[self.target_col].shift(-step) - df[self.target_col]) / df[self.target_col]
-        
-        df_train = df.dropna(subset=['target'])
-        return df_train[self.features], df_train['target']
+    def prepare_data(self, df: pd.DataFrame, step: int = 1):
+        """Create supervised data for direct multi-step return forecasting."""
+        if self.target_col not in df.columns:
+            raise ValueError(f"Target column '{self.target_col}' is missing from training data.")
 
-    def evaluate_holdout(self, df):
-        ticker = df['ticker'].iloc[0] if 'ticker' in df.columns else 'Unknown'
-        logger.info("Holdout evaluation started | ticker=%s | holdout_days=%s", ticker, self.holdout_days)
-        
-        X, y_return = self.prepare_data(df, step=1)
-        
-        train_size = len(X) - self.holdout_days
-        X_train, y_train = X.iloc[:train_size], y_return.iloc[:train_size]
-        X_test, y_test = X.iloc[train_size:], y_return.iloc[train_size:]
-        
-        params = self.config.copy()
-        params['objective'] = 'quantile'
-        params['alpha'] = 0.5
-        
-        model = lgb.LGBMRegressor(**params)
-        model.fit(X_train, y_train)
-        
-        # Dự đoán Return
-        pred_returns = model.predict(X_test)
-        
-        # KHÔI PHỤC LẠI GIÁ (Reconstruct Price) để tính Metrics cho trực quan
-        # Giá hiện tại (Close_T) của tập test
-        current_close = df[self.target_col].iloc[train_size : train_size + len(X_test)].values
-        
-        pred_prices = current_close * (1 + pred_returns)
-        actual_prices = current_close * (1 + y_test.values) # Tương đương Close_{T+1}
-        
-        mae = mean_absolute_error(actual_prices, pred_prices)
-        rmse = np.sqrt(mean_squared_error(actual_prices, pred_prices))
-        mape = mean_absolute_percentage_error(actual_prices, pred_prices)
-        
-        metrics = {"MAE": mae, "RMSE": rmse, "MAPE": mape}
-        logger.info(
-            "Holdout evaluation completed | ticker=%s | mae=%.2f | rmse=%.2f | mape=%.4f",
-            ticker,
-            mae,
-            rmse,
-            mape,
-        )
-        return metrics
+        ordered = df.copy()
+        if isinstance(ordered.index, pd.DatetimeIndex):
+            ordered = ordered.sort_index()
 
-    def train_and_predict_step(self, df, X_last, step):
+        excluded = {"ticker", "date", "target"}
+        candidate_features = [col for col in ordered.columns if col not in excluded]
+        self.features = [
+            col for col in candidate_features if pd.api.types.is_numeric_dtype(ordered[col])
+        ]
+
+        supervised = ordered[self.features].copy()
+        supervised["target"] = (
+            ordered[self.target_col].shift(-step) - ordered[self.target_col]
+        ) / ordered[self.target_col]
+        supervised = supervised.replace([np.inf, -np.inf], np.nan).dropna(subset=["target"])
+        supervised = supervised.dropna(axis=0)
+        return supervised[self.features], supervised["target"]
+
+    def train_and_predict_step(self, df: pd.DataFrame, x_last: pd.DataFrame, step: int) -> Dict[str, float]:
         X, y = self.prepare_data(df, step=step)
-        current_close = df[self.target_col].iloc[-1] # Giá ở thời điểm T hiện tại
-        
-        step_forecast = {"step": step}
-        for q in self.quantiles:
+        if X.empty or y.empty:
+            raise ValueError(f"Insufficient training rows for forecast step {step}.")
+
+        current_close = float(df[self.target_col].iloc[-1])
+        x_last = x_last.reindex(columns=self.features).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        step_forecast: Dict[str, float] = {"step": int(step)}
+        for quantile in self.quantiles:
             params = self.config.copy()
-            params['objective'] = 'quantile'
-            params['alpha'] = q
-            
+            params["objective"] = "quantile"
+            params["alpha"] = float(quantile)
+
             model = lgb.LGBMRegressor(**params)
             model.fit(X, y)
-            
-            # Dự đoán Future Return và Khôi phục lại mức Giá
-            pred_return = model.predict(X_last)[0]
-            pred_price = current_close * (1 + pred_return)
-            
-            step_forecast[f"q_{q}"] = pred_price
-            
+
+            predicted_return = float(model.predict(x_last)[0])
+            step_forecast[f"q_{quantile}"] = current_close * (1.0 + predicted_return)
+
         return step_forecast

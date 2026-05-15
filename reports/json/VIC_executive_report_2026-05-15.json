@@ -1,0 +1,192 @@
+{
+    "metadata": {
+        "ticker": "VIC",
+        "run_id": "3ef9fa87",
+        "as_of_date": "2026-05-15",
+        "generated_at": "2026-05-15T05:44:54Z",
+        "report_type": "executive",
+        "final_model": "champion"
+    },
+    "ticker": "VIC",
+    "run_id": "3ef9fa87",
+    "as_of_date": "2026-05-15",
+    "forecast_values": {
+        "current_price": 227.0,
+        "as_of_date": "2026-05-15",
+        "price_unit_detected": "thousand_vnd",
+        "price_scale_note": "Median close is 34.0000; detected unit=thousand_vnd; normalize_to=raw. Model input scale was kept raw.",
+        "horizon_days": 7,
+        "forecasts": [
+            {
+                "step": 1,
+                "q_0.025": 212.5334109182377,
+                "q_0.1": 221.05592547199944,
+                "q_0.5": 226.93647779765843,
+                "q_0.9": 238.26362760469192,
+                "q_0.975": 241.08464449517348
+            },
+            {
+                "step": 2,
+                "q_0.025": 208.85984400599796,
+                "q_0.1": 213.1082164896134,
+                "q_0.5": 228.4057295219919,
+                "q_0.9": 244.53272193001263,
+                "q_0.975": 252.60858109713345
+            },
+            {
+                "step": 3,
+                "q_0.025": 199.91825027668756,
+                "q_0.1": 215.5532117642836,
+                "q_0.5": 230.66996141864524,
+                "q_0.9": 247.1068822472699,
+                "q_0.975": 262.20306982204505
+            },
+            {
+                "step": 4,
+                "q_0.025": 197.99100220675246,
+                "q_0.1": 207.88858498839832,
+                "q_0.5": 230.48335428110553,
+                "q_0.9": 253.30789852772378,
+                "q_0.975": 265.0997235047039
+            },
+            {
+                "step": 5,
+                "q_0.025": 197.2993577208335,
+                "q_0.1": 210.33287301683552,
+                "q_0.5": 229.3641313972501,
+                "q_0.9": 257.937236545645,
+                "q_0.975": 270.2266328598762
+            },
+            {
+                "step": 6,
+                "q_0.025": 190.27074421512754,
+                "q_0.1": 209.2701646519463,
+                "q_0.5": 231.30311666198804,
+                "q_0.9": 262.57868114787726,
+                "q_0.975": 275.79017905330096
+            },
+            {
+                "step": 7,
+                "q_0.025": 187.12574088762375,
+                "q_0.1": 216.67037099724152,
+                "q_0.5": 229.177838006849,
+                "q_0.9": 264.4178512141335,
+                "q_0.975": 281.8001643046184
+            }
+        ]
+    },
+    "basic_model_metrics": {
+        "evaluation_method": "walk_forward",
+        "mape": 0.028914167947122583,
+        "rmse": 5.606898115786519,
+        "mae": 4.2633010334596335,
+        "directional_accuracy": 0.5342465753424658,
+        "interval_95_coverage": 0.8356164383561644
+    },
+    "walk_forward_summary": {
+        "evaluation_method": "walk_forward",
+        "status": "COMPLETED",
+        "fold_count": 8,
+        "sample_count": 498,
+        "feature_count": 28,
+        "mae": 4.2633010334596335,
+        "rmse": 5.606898115786519,
+        "mape": 0.028914167947122583,
+        "smape": 0.028913949680646506,
+        "directional_accuracy": 0.5342465753424658,
+        "interval_80_coverage": 0.678082191780822,
+        "interval_95_coverage": 0.8356164383561644,
+        "pinball_loss": 1.009178823419412,
+        "prediction_bias": -0.44938124159870424,
+        "prediction_bias_pct": -0.002402018117308343,
+        "quantile_crossing_rate": 0.00684931506849315
+    },
+    "risk_summary": {
+        "expected_return": 0.009594,
+        "expected_return_7d": 0.009594,
+        "downside_risk_95": -0.175658,
+        "upside_potential_95": 0.24141,
+        "risk_reward_ratio": 1.3743,
+        "var_95": 0.175658,
+        "expected_shortfall": 0.202006,
+        "risk_level": "EXTREME_RISK",
+        "risk_notes": [
+            "High drift severity detected."
+        ]
+    },
+    "regime_summary": {
+        "volatility_regime": "NORMAL_VOLATILITY",
+        "trend_regime": "UPTREND",
+        "volume_regime": "NORMAL_VOLUME",
+        "final_regime_label": "NORMAL_VOLATILITY__UPTREND__NORMAL_VOLUME",
+        "regime_confidence": 0.63,
+        "warnings": [],
+        "regime_notes": [
+            "Regime components computed independently: volatility=NORMAL_VOLATILITY, trend=UPTREND, volume=NORMAL_VOLUME."
+        ]
+    },
+    "drift_summary": {
+        "feature_drift_detected": true,
+        "target_drift_detected": true,
+        "concept_drift_detected": true,
+        "feature_score": 82,
+        "target_score": 1,
+        "concept_score": 2,
+        "total_score": 85,
+        "severity": "HIGH",
+        "recommended_action": "MANUAL_REVIEW",
+        "top_drifted_features": [
+            "close",
+            "volume",
+            "daily_return",
+            "vol_change",
+            "ma_7"
+        ],
+        "drift_notes": [
+            "Feature drift score=82 across 16 features.",
+            "Target drift score=1.",
+            "Concept drift score=2."
+        ]
+    },
+    "news_summary": {
+        "status": "NEWS_FOUND_GOOGLE_NEWS",
+        "found": true,
+        "items_count": 10,
+        "raw_news_items_count": 58,
+        "matched_news_items_count": 10,
+        "evidence_level": "HIGH",
+        "shock_type": "EVENT_DRIVEN",
+        "debug_path": "data\\news_debug\\VIC_news_debug_2026-05-15_3ef9fa87.json",
+        "queries": [
+            "\"VIC\" \"Vingroup\"",
+            "\"cổ phiếu VIC\"",
+            "\"Vingroup\" \"chứng khoán\"",
+            "\"VinFast\" \"Vingroup\""
+        ],
+        "google_news_used": true
+    },
+    "improvement": {
+        "agent_decision": "TRAIN_CHALLENGER",
+        "technical_retrain_required": true,
+        "technical_retrain_reasons": [
+            "95% interval coverage 0.8356 below minimum 0.8500.",
+            "High drift severity with concept-drift evidence.",
+            "Risk level is EXTREME_RISK with drift severity HIGH."
+        ],
+        "technical_retrain_strategy": "RETRAIN_RECENT_WINDOW",
+        "retrain_attempted": true,
+        "config_patch_source": "AGENT_PROPOSED",
+        "config_patch_validation_status": "VALID",
+        "governance_decision": "KEEP_CHAMPION",
+        "final_model": "champion"
+    },
+    "final_research_signal": {
+        "signal": "MANUAL_REVIEW",
+        "confidence": 0.6
+    },
+    "committee_assessment_summary": {
+        "assessment_summary": "Final research action is MANUAL_REVIEW. Final model=champion; risk_level=EXTREME_RISK; drift_severity=HIGH; governance_decision=KEEP_CHAMPION.",
+        "decision_rationale": "Extreme forecast risk requires manual review.",
+        "final_recommendation": "Final research action is MANUAL_REVIEW. Final model=champion; risk_level=EXTREME_RISK; drift_severity=HIGH; governance_decision=KEEP_CHAMPION. This is research output only, intended for paper-trading review and not financial advice."
+    }
+}

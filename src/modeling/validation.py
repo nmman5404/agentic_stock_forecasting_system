@@ -54,6 +54,7 @@ class FoldMetrics:
 
 @dataclass(frozen=True)
 class ValidationReport:
+    evaluation_method: str
     status: str
     target_col: str
     horizon: int
@@ -63,6 +64,7 @@ class ValidationReport:
     config: WalkForwardConfig
     metrics: Optional[ValidationMetrics]
     folds: List[FoldMetrics]
+    notes: List[str]
     message: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -147,6 +149,7 @@ def walk_forward_validate(
         )
         logger.warning(message)
         return ValidationReport(
+            evaluation_method="walk_forward",
             status="INSUFFICIENT_DATA",
             target_col=target_col,
             horizon=config.horizon,
@@ -156,6 +159,7 @@ def walk_forward_validate(
             config=config,
             metrics=None,
             folds=[],
+            notes=["Walk-forward evaluation could not run because the dataset is too small."],
             message=message,
         )
 
@@ -206,6 +210,7 @@ def walk_forward_validate(
         message = "No walk-forward folds were generated."
         logger.warning(message)
         return ValidationReport(
+            evaluation_method="walk_forward",
             status="INSUFFICIENT_DATA",
             target_col=target_col,
             horizon=config.horizon,
@@ -215,6 +220,7 @@ def walk_forward_validate(
             config=config,
             metrics=None,
             folds=[],
+            notes=["Walk-forward evaluation generated no validation folds."],
             message=message,
         )
 
@@ -232,7 +238,8 @@ def walk_forward_validate(
     )
 
     return ValidationReport(
-        status="PASS",
+        evaluation_method="walk_forward",
+        status="COMPLETED",
         target_col=target_col,
         horizon=config.horizon,
         sample_count=sample_count,
@@ -241,6 +248,7 @@ def walk_forward_validate(
         config=config,
         metrics=aggregate_metrics,
         folds=folds,
+        notes=["Walk-forward evaluation is the source of truth for model validation."],
     )
 
 

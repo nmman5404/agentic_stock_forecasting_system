@@ -1,0 +1,36 @@
+allowed_patch_keys:
+  learning_rate:
+    min: 0.005
+    max: 0.1
+  max_depth:
+    min: 2
+    max: 8
+  num_leaves:
+    min: 8
+    max: 64
+  n_estimators:
+    min: 100
+    max: 1000
+  min_child_samples:
+    min: 10
+    max: 100
+  subsample:
+    min: 0.5
+    max: 1.0
+  colsample_bytree:
+    min: 0.5
+    max: 1.0
+  reg_alpha:
+    min: 0.0
+    max: 10.0
+  reg_lambda:
+    min: 0.0
+    max: 10.0
+  train_window_days:
+    min: 252
+    max: 756
+
+policy:
+  reject_unknown_keys: true
+  clamp_out_of_range_values: false
+  require_non_empty_patch_for_train_challenger: true

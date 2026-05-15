@@ -1,8 +1,10 @@
 import pandas as pd
-from vnstock import *
+from pathlib import Path
+from vnstock import Quote
 from utils.logger import get_logger
 
 logger = get_logger("DataIngestion")
+RAW_CSV_DIR = Path("data/raw/csv")
 
 def fetch_historical_data(symbols: list, start_date: str, end_date: str, data_type: str = "stock") -> dict:
     """
@@ -30,16 +32,14 @@ def fetch_historical_data(symbols: list, start_date: str, end_date: str, data_ty
             )
             
             # Gọi hàm của vnstock
-            df = stock_historical_data(
-                symbol=sym, 
-                start_date=start_date, 
-                end_date=end_date, 
-                resolution="1D", 
-                type=data_type
+            df = Quote(source="VCI", symbol=sym, show_log=False).history(
+                start=start_date,
+                end=end_date,
+                interval="1D",
             )
             
             if df is not None and not df.empty:
-                # vnstock trả về cột 'time', ta đổi tên thành 'date' cho chuẩn mực
+                # vnstock trả về cột 'time', ta đổi tên thành 'date' 
                 if 'time' in df.columns:
                     df.rename(columns={'time': 'date'}, inplace=True)
                 
@@ -78,6 +78,41 @@ def get_vingroup_and_context_data(start_date: str, end_date: str) -> dict:
     
     # Gộp tất cả vào 1 dictionary duy nhất
     all_data = {**stock_data, **vn30_data, **derivative_data}
+    save_raw_csv_snapshots(all_data, RAW_CSV_DIR)
 
     logger.info("Ingestion phase completed | symbols_loaded=%s", len(all_data))
     return all_data
+
+def save_raw_csv_snapshots(all_data: dict, output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths = []
+
+    for symbol, df in all_data.items():
+        if df is None or df.empty:
+            logger.warning("Raw CSV snapshot skipped | symbol=%s | reason=empty_dataframe", symbol)
+            continue
+
+        csv_df = df.copy()
+        if csv_df.index.name == "date" or "date" not in csv_df.columns:
+            csv_df = csv_df.reset_index()
+        if "date" in csv_df.columns:
+            csv_df["date"] = pd.to_datetime(csv_df["date"]).dt.strftime("%Y-%m-%d")
+        csv_df["ticker"] = symbol
+
+        preferred_columns = ["date", "ticker", "open", "high", "low", "close", "volume"]
+        ordered_columns = [col for col in preferred_columns if col in csv_df.columns]
+        ordered_columns.extend(col for col in csv_df.columns if col not in ordered_columns)
+        csv_df = csv_df[ordered_columns]
+
+        path = output_dir / f"{symbol}_raw.csv"
+        csv_df.to_csv(path, index=False)
+        saved_paths.append(path)
+
+    if saved_paths:
+        logger.info(
+            "Raw CSV snapshots saved:\n%s", saved_paths
+        )
+    else:
+        logger.warning("Raw CSV snapshots skipped | reason=no_dataframes_saved")
+
+    return saved_paths

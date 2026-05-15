@@ -1,0 +1,13 @@
+promotion_rules:
+  max_mape_degradation: 0.002
+  min_mape_improvement_for_auto_promote: 0.001
+  max_directional_accuracy_drop: 0.03
+  max_interval_95_coverage_drop: 0.05
+  max_pinball_loss_increase_pct: 0.05
+  max_allowed_mape_for_promotion: 0.03
+  min_directional_accuracy_for_promotion: 0.50
+  min_interval_95_coverage_for_promotion: 0.85
+  reject_if_both_poor: true
+  reject_if_risk_level_worsens: true
+  reject_if_drift_severity_high: false
+  require_reason_for_promotion: true

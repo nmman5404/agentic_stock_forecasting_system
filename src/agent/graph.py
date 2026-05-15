@@ -1,89 +1,78 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict
-
-import yaml
 from langgraph.graph import END, StateGraph
 
-from src.agent.nodes import node_contextualize, node_evaluate, node_improve, node_recommend, node_validate
+from src.agent.nodes import (
+    node_compare_models,
+    node_evaluate_challenger,
+    node_evaluate_monitoring,
+    node_generate_report,
+    node_plan_retrain,
+    node_search_news_context,
+    node_train_challenger,
+    node_validate_forecast,
+    node_validate_or_repair_patch,
+)
 from src.agent.state import AgentState
 from utils.logger import get_logger
 
 logger = get_logger("AgentGraph")
 
 
-def load_config() -> Dict[str, Any]:
-    with Path("configs/agent_config.yaml").open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
 def route_after_evaluate(state: AgentState) -> str:
-    if state.get("evaluation_status") == "PASS":
-        return "node_recommend"
-    if state.get("retry_count", 0) > 0:
-        logger.info("Graph routing | from=evaluate_model | to=model_governance | reason=revalidation_after_retry")
-        return "node_improve"
-    logger.info("Graph routing | from=evaluate_model | to=contextualize_news | reason=abnormal_model_status")
-    return "node_contextualize"
+    health = state.get("workflow", {}).get("model_health_status", "MANUAL_REVIEW")
+    if health == "OK":
+        logger.info("Graph routing | from=evaluate_monitoring | to=generate_report | health=OK")
+        return "node_generate_report"
+    logger.info("Graph routing | from=evaluate_monitoring | to=search_news_context | health=%s", health)
+    return "node_search_news_context"
 
 
-def route_after_contextualize(state: AgentState) -> str:
-    shock_type = state.get("shock_type", "NO_NEWS")
-    if shock_type in {"BLACK_SWAN", "DATA_ISSUE"}:
-        logger.warning("Graph routing | from=contextualize_news | to=research_signal | shock_type=%s", shock_type)
-        return "node_recommend"
-    logger.info("Graph routing | from=contextualize_news | to=model_governance | shock_type=%s", shock_type)
-    return "node_improve"
-
-
-def route_after_improve(state: AgentState) -> str:
-    max_retries = load_config()["thresholds"]["max_retries"]
-    if state.get("retry_count", 0) >= max_retries:
-        logger.warning(
-            "Graph routing | from=model_governance | to=research_signal | reason=max_retries_reached | max_retries=%s",
-            max_retries,
-        )
-        return "node_recommend"
-    logger.info("Graph routing | from=model_governance | to=validate_quantiles | reason=revalidate_challenger")
-    return "node_validate"
+def route_after_patch(state: AgentState) -> str:
+    improvement = state.get("improvement", {})
+    if improvement.get("config_patch_valid") is True and improvement.get("validated_config_patch"):
+        logger.info("Graph routing | from=validate_or_repair_patch | to=train_challenger | valid=True")
+        return "node_train_challenger"
+    logger.info("Graph routing | from=validate_or_repair_patch | to=generate_report | valid=False")
+    return "node_generate_report"
 
 
 def build_agent_graph():
-    logger.info("Graph build started | workflow=agentic_stock_forecasting")
+    logger.info("Graph build started | workflow=champion_optional_challenger")
     workflow = StateGraph(AgentState)
-    workflow.add_node("node_validate", node_validate)
-    workflow.add_node("node_evaluate", node_evaluate)
-    workflow.add_node("node_contextualize", node_contextualize)
-    workflow.add_node("node_improve", node_improve)
-    workflow.add_node("node_recommend", node_recommend)
 
-    workflow.set_entry_point("node_validate")
-    workflow.add_edge("node_validate", "node_evaluate")
+    workflow.add_node("node_validate_forecast", node_validate_forecast)
+    workflow.add_node("node_evaluate_monitoring", node_evaluate_monitoring)
+    workflow.add_node("node_search_news_context", node_search_news_context)
+    workflow.add_node("node_plan_retrain", node_plan_retrain)
+    workflow.add_node("node_validate_or_repair_patch", node_validate_or_repair_patch)
+    workflow.add_node("node_train_challenger", node_train_challenger)
+    workflow.add_node("node_evaluate_challenger", node_evaluate_challenger)
+    workflow.add_node("node_compare_models", node_compare_models)
+    workflow.add_node("node_generate_report", node_generate_report)
+
+    workflow.set_entry_point("node_validate_forecast")
+    workflow.add_edge("node_validate_forecast", "node_evaluate_monitoring")
     workflow.add_conditional_edges(
-        "node_evaluate",
+        "node_evaluate_monitoring",
         route_after_evaluate,
         {
-            "node_recommend": "node_recommend",
-            "node_contextualize": "node_contextualize",
-            "node_improve": "node_improve",
+            "node_generate_report": "node_generate_report",
+            "node_search_news_context": "node_search_news_context",
         },
     )
+    workflow.add_edge("node_search_news_context", "node_plan_retrain")
+    workflow.add_edge("node_plan_retrain", "node_validate_or_repair_patch")
     workflow.add_conditional_edges(
-        "node_contextualize",
-        route_after_contextualize,
+        "node_validate_or_repair_patch",
+        route_after_patch,
         {
-            "node_recommend": "node_recommend",
-            "node_improve": "node_improve",
+            "node_train_challenger": "node_train_challenger",
+            "node_generate_report": "node_generate_report",
         },
     )
-    workflow.add_conditional_edges(
-        "node_improve",
-        route_after_improve,
-        {
-            "node_validate": "node_validate",
-            "node_recommend": "node_recommend",
-        },
-    )
-    workflow.add_edge("node_recommend", END)
+    workflow.add_edge("node_train_challenger", "node_evaluate_challenger")
+    workflow.add_edge("node_evaluate_challenger", "node_compare_models")
+    workflow.add_edge("node_compare_models", "node_generate_report")
+    workflow.add_edge("node_generate_report", END)
     return workflow.compile()
