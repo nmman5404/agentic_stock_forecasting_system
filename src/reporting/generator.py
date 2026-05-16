@@ -88,7 +88,10 @@ def _build_markdown_report(state: AgentState, today_str: str) -> str:
     if not rejected_md:
         rejected_md = "  - Không có thử nghiệm nào bị loại."
 
-    return f"""# Quant Research Report: {ticker} ({today_str})
+    return f"""# Quant Research Report: {ticker} 
+
+- **Generated on:** {today_str}
+- **Data As Of:** {fc.get('as_of_date', 'N/A')}
 
 ## 1. Executive Summary
 - **Final Action:** {final.get('action', 'N/A')}
@@ -129,6 +132,7 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
     action = final.get("action", "MANUAL_REVIEW")
     val = state.get("validation_metrics", {}).get("metrics", {})
     eval_dict = state.get("evaluation", {})
+    fc = state.get("forecast_data", {})  # Dòng sửa lỗi: Thêm biến fc ở đây
     
     bg_color = "#f3f4f6"
     text_color = "#1f2937"
@@ -180,7 +184,10 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
         </style></head>
         <body>
             <div class="container">
-                <h1>Quant Research Report: {ticker} ({today_str})</h1>
+                <h1>Quant Research Report: {ticker}</h1>
+                 <p style="color: #6b7280; margin-top: -10px; margin-bottom: 20px;">
+                    Generated on: <b>{today_str}</b> | Data As Of (Last Trading Day): <b style="color: #111827;">{fc.get('as_of_date', 'N/A')}</b>
+                </p>
                 <div class="signal">Final Action: {action}</div>
                 
                 <div class="section">

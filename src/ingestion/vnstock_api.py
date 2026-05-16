@@ -1,23 +1,28 @@
+import os
+import sys
 import pandas as pd
 from pathlib import Path
+from contextlib import contextmanager
 from vnstock import Quote
 from utils.logger import get_logger
 
 logger = get_logger("DataIngestion")
 RAW_CSV_DIR = Path("data/raw/csv")
 
+@contextmanager
+def suppress_stdout():
+    """Context manager để tạm thời chặn các lệnh print() quảng cáo ra terminal."""
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+
 def fetch_historical_data(symbols: list, start_date: str, end_date: str, data_type: str = "stock") -> dict:
     """
     Lấy dữ liệu lịch sử cho một danh sách mã chứng khoán/chỉ số.
-    
-    Args:
-        symbols: list các mã (VD: ['VIC', 'VHM'] hoặc ['VN30'])
-        start_date: Ngày bắt đầu 'YYYY-MM-DD'
-        end_date: Ngày kết thúc 'YYYY-MM-DD'
-        data_type: 'stock', 'index', hoặc 'derivative'
-        
-    Returns:
-        dict: Dictionary chứa Pandas DataFrame của từng mã. VD: {'VIC': df, 'VHM': df}
     """
     data_dict = {}
     
@@ -31,12 +36,13 @@ def fetch_historical_data(symbols: list, start_date: str, end_date: str, data_ty
                 end_date,
             )
             
-            # Gọi hàm của vnstock
-            df = Quote(source="VCI", symbol=sym, show_log=False).history(
-                start=start_date,
-                end=end_date,
-                interval="1D",
-            )
+            # Chặn quảng cáo
+            with suppress_stdout():
+                df = Quote(source="VCI", symbol=sym, show_log=False).history(
+                    start=start_date,
+                    end=end_date,
+                    interval="1D",
+                )
             
             if df is not None and not df.empty:
                 # vnstock trả về cột 'time', ta đổi tên thành 'date' 

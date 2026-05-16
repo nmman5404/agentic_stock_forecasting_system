@@ -46,9 +46,6 @@ def run_daily_pipeline(target_ticker: str = "VIC"):
     )
     
     raw_data = get_market_data(target_ticker, start_date, end_date)
-    if target_ticker not in raw_data:
-        logger.error("Pipeline aborted | run_id=%s | ticker=%s | reason=missing_target_data", run_id, target_ticker)
-        return None
 
     logger.info("Phase started | run_id=%s | ticker=%s | phase=feature_engineering", run_id, target_ticker)
     process_and_save_data(raw_data) # hàm này tạo features luôn

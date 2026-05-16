@@ -72,6 +72,7 @@ QUY TẮC PHÂN TÍCH:
 1. Quyết định (BUY/SELL/HOLD/WATCH) phải có sự dung hòa giữa số liệu định lượng (Risk, Expected Return, Trend) và thông tin định tính (News).
 2. Nếu Tin tức ghi "Không có tin tức", tuyệt đối không tự bịa ra tin.
 3. Nếu rủi ro (Risk Level) là EXTREME_RISK hoặc HIGH_RISK, cân nhắc cẩn trọng chiều BUY, ưu tiên quản trị rủi ro.
+4. LƯU Ý QUAN TRỌNG: T+1 đến T+7 đại diện cho "các phiên giao dịch tiếp theo", tuyệt đối không quy đổi ra thứ ngày tháng cụ thể (ví dụ không nói "ngày mai thứ 7").
 
 Nhiệm vụ: Tổng hợp tình hình và đưa ra khuyến nghị hành động nghiên cứu cuối cùng.
 Trả về ĐÚNG định dạng JSON sau:
