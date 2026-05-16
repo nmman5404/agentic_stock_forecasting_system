@@ -29,28 +29,27 @@ def generate_reports(state: AgentState) -> Dict[str, str]:
     ticker = state.get("ticker", "UNKNOWN")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
-    executive_json_path = folders["json"] / f"{ticker}_executive_report_{today_str}.json"
-    technical_json_path = folders["json"] / f"{ticker}_technical_pipeline_report_{today_str}.json"
+    # Chỉ tạo 1 file JSON duy nhất
+    json_path = folders["json"] / f"{ticker}_report_{today_str}.json"
     md_path = folders["markdown"] / f"{ticker}_report_{today_str}.md"
     html_path = folders["html"] / f"{ticker}_report_{today_str}.html"
 
-    _write_json(executive_json_path, _build_json_payload(state, "executive"))
-    _write_json(technical_json_path, _build_json_payload(state, "technical"))
+    # Lưu 3 file (JSON, Markdown, HTML)
+    _write_json(json_path, _build_json_payload(state))
     md_path.write_text(_build_markdown_report(state, today_str), encoding="utf-8")
     html_path.write_text(_build_html_report(state, today_str), encoding="utf-8")
 
     return {
-        "executive_json": str(executive_json_path),
-        "technical_pipeline_json": str(technical_json_path),
+        "json": str(json_path),
         "markdown": str(md_path),
         "html": str(html_path),
     }
 
-def _build_json_payload(state: AgentState, report_type: str) -> Dict[str, Any]:
+def _build_json_payload(state: AgentState) -> Dict[str, Any]:
     return {
         "metadata": {
             "ticker": state.get("ticker", "UNKNOWN"),
-            "report_type": report_type,
+            "report_type": "comprehensive",
             "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "retrain_count": state.get("retry_count", 0),
         },
@@ -132,7 +131,7 @@ def _build_html_report(state: AgentState, today_str: str) -> str:
     action = final.get("action", "MANUAL_REVIEW")
     val = state.get("validation_metrics", {}).get("metrics", {})
     eval_dict = state.get("evaluation", {})
-    fc = state.get("forecast_data", {})  # Dòng sửa lỗi: Thêm biến fc ở đây
+    fc = state.get("forecast_data", {})  
     
     bg_color = "#f3f4f6"
     text_color = "#1f2937"

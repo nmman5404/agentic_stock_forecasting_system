@@ -295,6 +295,7 @@ Final action có thể là:
 ```text
 BUY
 SELL
+HOLD
 WATCH
 ```
 

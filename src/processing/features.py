@@ -37,5 +37,5 @@ def generate_context_features(context_df: pd.DataFrame, prefix: str) -> pd.DataF
     df = context_df.copy()
     context_features = pd.DataFrame(index=df.index)
     context_features[f'{prefix}_return'] = df['close'].pct_change()
-    context_features[f'{prefix}_close'] = df['close']
+
     return context_features

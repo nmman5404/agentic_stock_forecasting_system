@@ -56,7 +56,7 @@ Trả về ĐÚNG định dạng JSON sau:
     "reasoning": "Lý do của bạn..."
 }}"""
 
-FINAL_REPORT_PROMPT = """Bạn là một Giám đốc Đầu tư (CIO) định lượng. Dựa vào CÁC DỮ LIỆU ĐƯỢC CUNG CẤP DƯỚI ĐÂY:
+FINAL_REPORT_PROMPT = """Bạn là một Giám đốc Đầu tư định lượng. Dựa vào CÁC DỮ LIỆU ĐƯỢC CUNG CẤP DƯỚI ĐÂY:
 Mã cổ phiếu: {ticker}
 
 Dự báo 7 ngày:

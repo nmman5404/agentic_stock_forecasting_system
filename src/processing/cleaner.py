@@ -17,12 +17,11 @@ def process_and_save_data(raw_data_dict: dict):
     
     if "VN30" in raw_data_dict:
         vn30_features = generate_context_features(raw_data_dict["VN30"], prefix="vn30")
-        # Lưu raw context vào DB
         save_to_sqlite(raw_data_dict["VN30"], "raw_VN30")
         
     if "VN30F1M" in raw_data_dict:
         vn30f_features = generate_context_features(raw_data_dict["VN30F1M"], prefix="vn30f")
-        save_to_sqlite(raw_data_dict["VN30F1M"], "raw_VN30F1M")
+        save_to_sqlite(raw_data_dict["VN30F1M"], "raw_VN30F1M") 
 
     # Merge hai bảng context lại với nhau theo index (date)
     context_combined = pd.DataFrame()
@@ -58,7 +57,7 @@ def process_and_save_data(raw_data_dict: dict):
             final_len,
         )
         
-        # Lưu dữ liệu ĐÃ XỬ LÝ (Processed) vào Database
+        # Lưu dữ liệu ĐÃ XỬ LÝ vào Database
         save_to_sqlite(df_featured, f"processed_{sym}")
         processed_stocks[sym] = df_featured
         

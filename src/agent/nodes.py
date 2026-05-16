@@ -45,7 +45,7 @@ def _ask_gemini(prompt: str) -> Dict[str, Any]:
             HumanMessage(content=prompt)
         ])
         
-        # Bước 1: Trích xuất text an toàn (Fix lỗi list)
+        # Bước 1: Trích xuất text an toàn 
         raw_text = _extract_text(response_msg.content)
         
         # Bước 2: Xóa thẻ markdown json
@@ -57,7 +57,7 @@ def _ask_gemini(prompt: str) -> Dict[str, Any]:
         return {}
 
 def node_fix_quantiles(state: AgentState) -> AgentState:
-    """Đảm bảo các dải lượng tử (quantiles) không bị cắt chéo nhau."""
+    """Đảm bảo các quantiles không crossing."""
     logger.info("Node execution | fix_quantiles")
     forecast_data = state.get("forecast_data", {})
     keys = ["q_0.025", "q_0.1", "q_0.5", "q_0.9", "q_0.975"]

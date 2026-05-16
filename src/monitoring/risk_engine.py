@@ -30,7 +30,6 @@ def calculate_risk_report(forecast_data: Dict[str, Any]) -> Dict[str, Any]:
 
     report = {
         "expected_return": round(expected_return, 6),
-        "expected_return_7d": round(expected_return, 6),
         "downside_risk_95": round(downside_risk_95, 6),
         "upside_potential_95": round(upside_potential_95, 6),
         "risk_reward_ratio": round(risk_reward_ratio, 4),
