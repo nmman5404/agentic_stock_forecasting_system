@@ -326,7 +326,7 @@ Trong đó:
 #### Volume Change — Biến động khối lượng
 
 $$
-V\_{change}_t = \frac{V_t - V_{t-1}}{V_{t-1}}
+V\_{change}_{t} = \frac{V_t - V_{t-1}}{V_{t-1}}
 $$
 
 Chỉ số này cho biết khối lượng giao dịch thay đổi bao nhiêu so với ngày trước đó.
